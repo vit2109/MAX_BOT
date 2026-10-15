@@ -20,6 +20,68 @@ Chrome, Selenium, HTML-парсинг, Qt и зависимости для Excel
 Проверка TLS включена. Если для соединения нужен дополнительный доверенный сертификат,
 задайте `SSL_CERT_FILE` с путём к PEM-набору доверенных CA, включая требуемую цепочку.
 
+## Запуск через Docker Compose
+
+Нужен запущенный Docker Engine (на Windows — Docker Desktop в режиме Linux containers).
+В корне проекта уже есть `Dockerfile`, `compose.yaml` и шаблон `.env.example`.
+
+Если `.env` ещё нет, создайте его:
+
+```powershell
+cd D:\PROJECTS\MAX_BOT
+Copy-Item .env.example .env
+```
+
+Если `.env` уже существует, сохраните его и добавьте недостающие параметры вручную.
+Откройте `.env` и впишите токен после знака `=`:
+
+```dotenv
+MAX_BOT_TOKEN=ваш_реальный_токен
+MAX_RECEIVE_MODE=polling
+MAX_AUTO_START=true
+MAX_WEB_PORT=8000
+```
+
+Проверьте источники в `channels.txt`, получателей в `recipients.txt` и запустите:
+
+```powershell
+docker compose up -d --build
+docker compose logs -f --tail=100 bot
+```
+
+Откройте [панель управления](http://127.0.0.1:8000). Мониторинг стартует автоматически,
+в том числе после перезапуска контейнера. Для ручного запуска кнопкой **Старт** задайте
+`MAX_AUTO_START=false`. Параметр автозапуска работает и при обычном запуске приложения.
+Healthcheck проверяет доступность панели и базы; ошибку токена или мониторинга смотрите
+в статусе панели и журнале. Одновременно с контейнером не запускайте EXE/CLI с тем же
+токеном и базой данных.
+
+Папки `data/` и `output/`, а также пять файлов настроек подключены из папки проекта.
+Изменения через веб-панель сохраняются на компьютере; пересборка и удаление контейнера
+не удаляют эти файлы. Пустой `.env` не позволит запустить Compose: токен обязателен.
+`.env` не попадает в Git или контекст сборки образа.
+
+```powershell
+docker compose ps
+docker compose down
+# Применить изменения .env:
+docker compose up -d --force-recreate
+```
+
+После изменения исходников используйте `docker compose up -d --build`.
+Для другого порта задайте, например, `MAX_WEB_PORT=8080`. Порт привязан к localhost.
+
+Для серверного режима задайте `MAX_RECEIVE_MODE=webhook` и `MAX_WEBHOOK_SECRET`,
+настройте HTTPS reverse proxy на `/webhook` по инструкции ниже, затем зарегистрируйте URL:
+
+```powershell
+docker compose exec bot python main.py --register-webhook https://your-domain.example/webhook
+```
+
+Команда использует переменные уже запущенного контейнера. Секреты в образ не встраиваются.
+Для собственного набора CA дополнительно подключите PEM-файл в контейнер и укажите
+`SSL_CERT_FILE` в секции `environment` Compose.
+
 ## Локальный запуск
 
 Python 3.12+ и uv:

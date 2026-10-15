@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import hmac
 import json
@@ -155,6 +156,8 @@ service = MonitorService()
 
 @asynccontextmanager
 async def lifespan(_app):
+    if os.environ.get("MAX_AUTO_START", "").strip().lower() in {"1", "true", "yes", "on"}:
+        service.start()
     yield
     service.stop()
     thread = service._thread

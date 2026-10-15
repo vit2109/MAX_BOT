@@ -14,6 +14,12 @@ from parser import message_from_api, message_uid, normalize_channel_id, normaliz
 from store import MessageStore
 
 
+@pytest.fixture(autouse=True)
+def disable_environment_autostart(monkeypatch):
+    # Never start a real worker from an inherited Docker environment in unrelated tests.
+    monkeypatch.delenv("MAX_AUTO_START", raising=False)
+
+
 @pytest.fixture
 def settings(tmp_path):
     base = load_settings()
@@ -283,3 +289,28 @@ def test_rematch_clears_false_alarms_without_sending(settings, store):
     rematch_existing(store, settings)
     assert store.recent_matches() == []
     assert store.pending_deliveries() == []
+
+
+@pytest.mark.parametrize("value,expected", [("true", 1), ("false", 0)])
+def test_web_lifespan_autostart(monkeypatch, value, expected):
+    import asyncio
+    import server
+
+    class FakeService:
+        _thread = None
+        starts = 0
+        stops = 0
+
+        def start(self): self.starts += 1
+        def stop(self): self.stops += 1
+
+    service = FakeService()
+    monkeypatch.setattr(server, "service", service)
+    monkeypatch.setenv("MAX_AUTO_START", value)
+
+    async def run():
+        async with server.lifespan(server.app):
+            assert service.starts == expected
+        assert service.stops == 1
+
+    asyncio.run(run())

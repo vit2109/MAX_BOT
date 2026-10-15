@@ -11,7 +11,8 @@ wheels/
 
 # Local credentials, caches and runtime data
 .env
-.env
+.env.*
+!.env.example
 .uv-cache/
 .pytest_cache/
 .pytest_tmp/
