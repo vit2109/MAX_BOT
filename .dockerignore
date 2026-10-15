@@ -19,3 +19,4 @@ tests
 .aws
 *.pem
 *.key
+certs

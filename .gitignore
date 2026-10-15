@@ -19,3 +19,4 @@ wheels/
 .chrome-profile/
 output/
 data/
+certs/

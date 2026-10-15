@@ -1,0 +1,12 @@
+# Optional CA bundle overlay; use only with a complete PEM trust bundle in certs/ca-bundle.pem.
+services:
+  bot:
+    environment:
+      SSL_CERT_FILE: /app/certs/ca-bundle.pem
+    volumes:
+      - type: bind
+        source: ./certs/ca-bundle.pem
+        target: /app/certs/ca-bundle.pem
+        read_only: true
+        bind:
+          create_host_path: false

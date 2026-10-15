@@ -200,6 +200,46 @@ def test_request_contract_and_secret_redaction():
     finally:
         api.close()
 
+
+@pytest.mark.parametrize("error,expected", [
+    (httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] secret-token"), "TLS"),
+    (httpx.ConnectTimeout("secret-token"), "время ожидания"),
+    (httpx.ProxyError("secret-token"), "прокси"),
+    (httpx.ConnectError("secret-token"), "не удалось подключиться"),
+    (httpx.ReadError("secret-token"), "прервано"),
+])
+def test_transport_error_is_not_http_503(error, expected):
+    def handler(request):
+        raise error
+
+    api = MaxAPI("secret-token", transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(MaxAPIError) as caught:
+            api.me()
+        assert caught.value.status is None
+        assert "HTTP 503" not in str(caught.value)
+        assert expected in str(caught.value)
+        assert "GET /me" in str(caught.value)
+        assert "secret-token" not in str(caught.value)
+    finally:
+        api.close()
+
+
+def test_actual_http_503_is_distinguished():
+    def handler(request):
+        return httpx.Response(503, text="private error body")
+
+    api = MaxAPI("secret-token", transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(MaxAPIError) as caught:
+            api.me()
+        assert caught.value.status == 503
+        assert "HTTP 503" in str(caught.value)
+        assert "private error body" not in str(caught.value)
+    finally:
+        api.close()
+
+def test_retry_after_and_secret_redaction():
     def fail(request):
         return httpx.Response(429, headers={"Retry-After": "45"}, text="secret-token")
 

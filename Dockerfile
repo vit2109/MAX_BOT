@@ -13,6 +13,8 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev --no-install-project --no-cache
 
 COPY *.py ./
+RUN python ca_bundle.py /opt/max-ca-bundle.pem
+ENV SSL_CERT_FILE=/opt/max-ca-bundle.pem
 COPY web/ ./web/
 COPY config.ini channels.txt recipients.txt keywords.json keywords.txt ./
 RUN mkdir -p /app/data /app/output

@@ -2,16 +2,45 @@
 from __future__ import annotations
 
 import time
+import socket
+import ssl
 import httpx
 
 API_URL = "https://platform-api2.max.ru"
 
 
 class MaxAPIError(RuntimeError):
-    def __init__(self, status: int, retry_after: float = 1):
+    def __init__(self, status: int | None, retry_after: float = 1, *,
+                 reason: str = "", endpoint: str = ""):
         self.status = status
         self.retry_after = retry_after
-        super().__init__(f"MAX API: HTTP {status}")
+        message = f"MAX API: HTTP {status}" if status is not None else "MAX API: ошибка соединения"
+        if reason:
+            message += f" — {reason}"
+        if endpoint:
+            message += f" ({endpoint})"
+        super().__init__(message)
+
+
+def connection_reason(exc: httpx.HTTPError) -> str:
+    """Return fixed diagnostic text, never raw exceptions containing URLs or secrets."""
+    causes = []
+    current: BaseException | None = exc
+    while current is not None and all(current is not previous for previous in causes):
+        causes.append(current)
+        current = current.__cause__ or current.__context__
+    if any(isinstance(cause, ssl.SSLCertVerificationError) or
+           "CERTIFICATE_VERIFY_FAILED" in str(cause) for cause in causes):
+        return "не пройдена проверка TLS-сертификата; проверьте доверенные CA в контейнере (SSL_CERT_FILE)"
+    if isinstance(exc, httpx.TimeoutException):
+        return "истекло время ожидания ответа MAX; проверьте доступ контейнера к интернету"
+    if isinstance(exc, httpx.ProxyError):
+        return "ошибка подключения через прокси; проверьте HTTPS_PROXY"
+    if any(isinstance(cause, socket.gaierror) for cause in causes):
+        return "DNS не разрешает имя сервера MAX; проверьте DNS контейнера"
+    if isinstance(exc, httpx.ConnectError):
+        return "не удалось подключиться к MAX; проверьте сеть, DNS и прокси контейнера"
+    return "соединение с MAX прервано до получения корректного HTTP-ответа"
 
 
 class MaxAPI:
@@ -28,14 +57,15 @@ class MaxAPI:
     def request(self, method: str, path: str, **kwargs) -> dict:
         try:
             response = self.client.request(method, path, **kwargs)
-        except httpx.HTTPError:
-            raise MaxAPIError(503) from None
+        except httpx.HTTPError as exc:
+            raise MaxAPIError(None, reason=connection_reason(exc), endpoint=f"{method} {path}") from None
         if response.is_error:
             try:
                 delay = min(300, max(1, float(response.headers.get("Retry-After", "1"))))
             except ValueError:
                 delay = 1
-            raise MaxAPIError(response.status_code, delay)
+            reason = "сервер или шлюз MAX временно недоступен" if response.status_code == 503 else ""
+            raise MaxAPIError(response.status_code, delay, reason=reason, endpoint=f"{method} {path}")
         try:
             data = response.json()
         except ValueError:
