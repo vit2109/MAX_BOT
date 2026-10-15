@@ -1,0 +1,21 @@
+[project]
+name = "mad-max-bot"
+version = "0.2.0"
+description = "Мониторинг аварий связи через официальный MAX Bot API"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.141.1",
+    "httpx>=0.28.1,<1",
+    "uvicorn>=0.52.4",
+]
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.13",
+    "pytest>=8.3",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--basetemp=.pytest_tmp"

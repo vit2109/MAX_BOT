@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MAX монитор</title>
+  <style>
+    :root {
+      --bg: #10141c;
+      --panel: #181e29;
+      --panel-2: #141a24;
+      --line: #2a3344;
+      --text: #e8eef7;
+      --muted: #8b97ab;
+      --accent: #6aa6ff;
+      --ok: #3ddc84;
+      --warn: #e74c3c;
+      --idle: #7f8b9c;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body {
+      font-family: Segoe UI, Tahoma, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .app {
+      height: 100%;
+      display: grid;
+      grid-template-rows: auto auto 1fr auto;
+      gap: 12px;
+      padding: 16px;
+    }
+    header, .stats, .boards, footer {
+      min-width: 0;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .led {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--idle);
+      box-shadow: 0 0 0 3px #ffffff10;
+    }
+    .led.on { background: var(--ok); }
+    .led.error { background: var(--warn); }
+    h1 { font-size: 18px; margin: 0; font-weight: 600; }
+    .status { color: var(--muted); font-size: 13px; }
+    .spacer { flex: 1; }
+    button {
+      background: #243044;
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 16px;
+      cursor: pointer;
+    }
+    button.primary { background: #1f4b8f; border-color: #2d63b8; }
+    button:disabled { opacity: .45; cursor: default; }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 8px;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+    }
+    .card .n { font-size: 22px; font-weight: 700; }
+    .card .l { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .chips, .channels {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .chip {
+      background: #222b3a;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .chip b { color: var(--text); }
+    .boards {
+      display: grid;
+      grid-template-columns: 1.4fr .9fr;
+      gap: 12px;
+      min-height: 0;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .panel.secondary { background: var(--panel-2); }
+    .panel h2 {
+      margin: 0;
+      padding: 12px 14px 8px;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .list {
+      overflow: auto;
+      padding: 0 10px 10px;
+      min-height: 0;
+    }
+    article {
+      border-top: 1px solid var(--line);
+      padding: 10px 4px;
+    }
+    .meta { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+    .kw { color: var(--accent); }
+    .main-list article { font-size: 15px; line-height: 1.45; white-space: pre-wrap; }
+    .all-list article { font-size: 11px; line-height: 1.35; color: #b7c2d4; }
+    .all-list .text { white-space: pre-wrap; }
+    .hit { outline: 1px solid #3ddc8433; background: #3ddc840d; border-radius: 6px; padding: 8px 6px; }
+    article.critical { outline: 1px solid #e74c3c66; background: #e74c3c14; border-radius: 8px; }
+    article.active { outline: 1px solid #f39c1255; background: #f39c1214; border-radius: 8px; }
+    article.normal { outline: 1px solid #7f8b9c44; }
+    .badge { display: inline-block; margin-right: 6px; padding: 1px 8px; border-radius: 999px; font-size: 11px; }
+    .badge.critical { background: #e74c3c33; color: #ffb4ac; }
+    .badge.active { background: #f39c1233; color: #ffd59a; }
+    .badge.normal { background: #7f8b9c33; color: #c5cedb; }
+    .badge.toponym { background: #6aa6ff33; color: #b9d4ff; }
+    footer { color: var(--muted); font-size: 12px; }
+    .overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: #0008;
+      z-index: 20;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .overlay.open { display: flex; }
+    .modal {
+      width: min(980px, 100%);
+      max-height: 90vh;
+      overflow: auto;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 18px;
+    }
+    .modal h2 { margin: 0 0 6px; font-size: 18px; }
+    .hint { color: var(--muted); font-size: 12px; margin-bottom: 14px; }
+    .rule {
+      background: #10151e;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-bottom: 14px;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .rule b { color: var(--text); }
+    .rule p { margin: 6px 0 10px; color: var(--muted); }
+    .rule p:last-child { margin-bottom: 0; }
+    .preview-out {
+      margin: 8px 0 0;
+      padding: 10px;
+      border-radius: 8px;
+      background: #10151e;
+      border: 1px solid var(--line);
+      color: var(--text);
+      font-size: 13px;
+      white-space: pre-wrap;
+      min-height: 48px;
+    }
+    .preview-out.ok { border-color: #3ddc84; }
+    .preview-out.no { border-color: var(--warn); }
+    .full { grid-column: 1 / -1; }
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+    input[type="number"], textarea {
+      width: 100%;
+      margin-top: 6px;
+      background: #10151e;
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      font: inherit;
+    }
+    textarea { min-height: 140px; resize: vertical; }
+    .check { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 14px; margin: 8px 0 14px; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+    .toast {
+      display: none;
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      background: #1d3b28;
+      border: 1px solid #3ddc84;
+      color: var(--text);
+      padding: 10px 14px;
+      border-radius: 8px;
+      z-index: 30;
+    }
+    .toast.error { background: #3b1d1d; border-color: var(--warn); }
+    @media (max-width: 980px) {
+      .stats { grid-template-columns: repeat(3, 1fr); }
+      .boards { grid-template-columns: 1fr; }
+      .grid-2 { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div id="led" class="led"></div>
+      <h1>MAX монитор</h1>
+      <div id="status" class="status">Загрузка…</div>
+      <div class="spacer"></div>
+      <button id="settings">Настройки</button>
+      <button id="start" class="primary">Старт</button>
+      <button id="stop" disabled>Стоп</button>
+    </header>
+
+    <section class="stats" id="stats"></section>
+    <div class="chips" id="keywords"></div>
+
+    <section class="boards">
+      <div class="panel">
+        <h2>Отфильтрованные новости</h2>
+        <div id="matches" class="list main-list"></div>
+      </div>
+      <div class="panel secondary">
+        <h2>Все новости</h2>
+        <div id="messages" class="list all-list"></div>
+      </div>
+    </section>
+    <footer id="footer"></footer>
+  </div>
+
+  <div id="overlay" class="overlay">
+    <div class="modal">
+      <h2>Настройки</h2>
+      <div class="rule">
+        <b>В «Отфильтрованные новости»</b>
+        <p>Текст попадает слева только если есть слово из <b>группы 1</b> (тематика: оператор, IX, технология) <b>и</b> хотя бы одно слово из <b>группы 2, 3 или 5</b> (проблема / статус / восстановление). Топоним сам по себе не означает аварию. Подтверждённое восстановление снижает важность, если нет признаков продолжающейся проблемы. Поле «минимум совпавших слов» — дополнительный порог.</p>
+        <b>В отправленные адресатам</b>
+        <p>Уходит в чат только уже отфильтрованное сообщение, если включено «Отправлять совпадения» и список адресатов не пуст. Поступающие события API обрабатываются сразу. Перепроверка архива не запускает рассылку. Неудачные отправки повторяются из очереди. «Слать только критические» — в чат только красные (аварийный сигнал).</p>
+        <b>Пример</b>
+        <p>«На MSK-IX проблемы, авария на подстанции» → группа 1: MSK-IX, группа 2: авария/проблем → в отфильтрованные, важность критическое. Без слова из группы 1 новость останется только справа, во всех новостях.</p>
+      </div>
+      <div class="grid-2">
+        <label>Источники API (числовой chat_id, бот должен быть администратором)
+          <textarea id="set-channels" placeholder="-69447423358448"></textarea>
+        </label>
+        <label>Адресаты: chat:-123 для чата, user:123 для пользователя
+          <textarea id="set-recipients" placeholder="user:123456789"></textarea>
+        </label>
+        <label>1. Тематика (операторы, технологии) — обязательно хотя бы одно
+          <textarea id="set-g1" placeholder="Мегафон"></textarea>
+        </label>
+        <label>2. Негатив → метка «Критическое»
+          <textarea id="set-g2" placeholder="сбой"></textarea>
+        </label>
+        <label>3. Статус события → «Активное событие»
+          <textarea id="set-g3" placeholder="произошел"></textarea>
+        </label>
+        <label>4. Топоним РФ → географическая метка
+          <textarea id="set-g4" placeholder="Москва"></textarea>
+        </label>
+        <label>5. Подтверждённое восстановление → «Нормальное»
+          <textarea id="set-g5" placeholder="восстановлен"></textarea>
+        </label>
+        <div>
+          <label>Пауза при ошибке API, сек
+            <input id="set-interval" type="number" min="1" max="3600">
+          </label>
+          <label>Таймаут запросов API, сек
+            <input id="set-channel-timeout" type="number" min="5" max="300">
+          </label>
+          <p id="api-status"></p>
+          <label>Минимум совпавших слов
+            <input id="set-min-hits" type="number" min="1" max="20">
+          </label>
+          <label class="check"><input id="set-send" type="checkbox"> Отправлять совпадения адресатам</label>
+          <label class="check"><input id="set-critical" type="checkbox"> Слать только критические</label>
+        </div>
+        <label class="full">Проверить текст (по полям выше, сохранять не обязательно)
+          <textarea id="set-preview" placeholder="Вставьте новость, например про MSK-IX…"></textarea>
+        </label>
+      </div>
+      <div id="preview-out" class="preview-out" hidden></div>
+      <div class="modal-actions">
+        <button id="settings-preview">Проверить текст</button>
+        <button id="settings-cancel">Отмена</button>
+        <button id="settings-save" class="primary">Сохранить</button>
+      </div>
+    </div>
+  </div>
+  <div id="toast" class="toast"></div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const esc = (value) => String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;");
+
+    function render(data) {
+      const on = data.state === "on" || data.state === "starting";
+      $("led").className = "led " + (data.state || "off");
+      $("status").textContent = data.status || "";
+      $("start").disabled = on;
+      $("stop").disabled = !on && data.state !== "stopping";
+
+      const s = data.stats || {};
+      const sess = data.session || {};
+      $("stats").innerHTML = [
+        card(data.channels_listed || 0, "каналов в списке"),
+        card(sess.channels_processed || 0, "событий обработано за сессию"),
+        card(s.messages_total || 0, "сообщений в базе"),
+        card(sess.messages_new || 0, "новых за сессию"),
+        card(s.matches_total || 0, "совпадений по критериям"),
+        card(s.sent_total || 0, "отправлено"),
+      ].join("");
+
+      $("keywords").innerHTML = (s.labels || []).map((item) =>
+        `<span class="chip">${esc(item.name)}: <b>${item.count}</b></span>`
+      ).join("") + (s.keywords || []).map((item) =>
+        `<span class="chip">${esc(item.word)}: <b>${item.count}</b></span>`
+      ).join("") + (s.channels || []).map((ch) =>
+        `<span class="chip">${esc(ch.name)}: <b>${ch.messages}</b> / совп. ${ch.matches}</span>`
+      ).join("");
+
+      $("matches").innerHTML = (data.matches || []).map((item) => `
+        <article class="${esc(item.severity || "")}">
+          <div class="meta">${esc(item.datetime || item.time)} · ${esc(item.channel_name || item.channel_id)}
+            ${badge(item.labels)}
+            ${item.matched_keywords ? ` · <span class="kw">${esc(item.matched_keywords)}</span>` : ""}
+            ${item.sent ? " · отправлено" : ""}</div>
+          <div>${esc(item.text)}</div>
+        </article>
+      `).join("") || `<article class="meta">Пока нет совпадений</article>`;
+
+      $("messages").innerHTML = (data.messages || []).map((item) => `
+        <article class="${item.matched ? "hit" : ""} ${esc(item.severity || "")}">
+          <div class="meta">${esc(item.time || item.datetime)} · ${esc(item.channel_name || item.channel_id)}
+            ${item.views ? " · " + esc(item.views) : ""} ${badge(item.labels)}</div>
+          <div class="text">${esc(item.text)}</div>
+        </article>
+      `).join("") || `<article class="meta">Лента пуста</article>`;
+
+      const current = sess.current_channel ? `Текущий канал: ${sess.current_channel}. ` : "";
+      $("footer").textContent = `${current}Итераций API: ${sess.rounds || 0}. Пауза при ошибках: ${data.interval_seconds} с.`;
+    }
+
+    function card(n, label) {
+      return `<div class="card"><div class="n">${esc(n)}</div><div class="l">${esc(label)}</div></div>`;
+    }
+    function badge(labels) {
+      if (!labels) return "";
+      return String(labels).split(",").map((item) => item.trim()).filter(Boolean).map((item) => {
+        const cls = item.includes("крит") ? "critical" : item.includes("актив") ? "active" : item.includes("топон") ? "toponym" : "normal";
+        return `<span class="badge ${cls}">${esc(item)}</span>`;
+      }).join("");
+    }
+
+    async function refresh() {
+      const res = await fetch("/api/feed");
+      render(await res.json());
+    }
+
+    $("start").onclick = async () => {
+      await fetch("/api/start", { method: "POST" });
+      refresh();
+    };
+    $("stop").onclick = async () => {
+      await fetch("/api/stop", { method: "POST" });
+      refresh();
+    };
+
+    function lines(id) {
+      return $(id).value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+    }
+    function showToast(text, error=false) {
+      const el = $("toast");
+      el.textContent = text;
+      el.className = "toast" + (error ? " error" : "");
+      el.style.display = "block";
+      setTimeout(() => { el.style.display = "none"; }, 2500);
+    }
+    async function openSettings() {
+      const data = await (await fetch("/api/settings")).json();
+      $("set-channels").value = (data.channels || []).join("\n");
+      $("set-recipients").value = (data.recipients || []).join("\n");
+      const byId = Object.fromEntries((data.keyword_groups || []).map((g) => [g.id, g]));
+      for (const id of [1, 2, 3, 4, 5]) {
+        $("set-g" + id).value = ((byId[id] && byId[id].keywords) || []).join("\n");
+      }
+      $("set-interval").value = data.interval_seconds;
+      $("set-channel-timeout").value = data.channel_timeout;
+      $("api-status").textContent = `Режим: ${data.receive_mode}. Токен MAX_BOT_TOKEN: ${data.token_configured ? "задан" : "не задан"}`;
+      $("set-min-hits").value = data.min_keyword_hits;
+      $("set-send").checked = !!data.send_enabled;
+      $("set-critical").checked = !!data.send_only_critical;
+      $("overlay").classList.add("open");
+    }
+    function settingsPayload() {
+      return {
+        interval_seconds: Number($("set-interval").value),
+        channel_timeout: Number($("set-channel-timeout").value),
+        min_keyword_hits: Number($("set-min-hits").value),
+        send_enabled: $("set-send").checked,
+        send_only_critical: $("set-critical").checked,
+        channels: lines("set-channels"),
+        keywords: [],
+        keyword_groups: [1, 2, 3, 4, 5].map((id) => ({ id, keywords: lines("set-g" + id) })),
+        recipients: lines("set-recipients"),
+      };
+    }
+    async function saveSettings() {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(settingsPayload()),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        const detail = Array.isArray(err.detail)
+          ? err.detail.map((item) => item.msg || JSON.stringify(item)).join("; ")
+          : (err.detail || "Не удалось сохранить");
+        showToast(detail, true);
+        return;
+      }
+      const data = await res.json();
+      $("overlay").classList.remove("open");
+      const extra = data.rematched ? `, в ленте отмечено ${data.rematched} совпадений из базы` : "";
+      showToast("Настройки сохранены" + extra);
+      refresh();
+    }
+    async function previewText() {
+      const payload = settingsPayload();
+      const res = await fetch("/api/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: $("set-preview").value,
+          min_keyword_hits: payload.min_keyword_hits,
+          send_enabled: payload.send_enabled,
+          send_only_critical: payload.send_only_critical,
+          keyword_groups: payload.keyword_groups,
+          recipients: payload.recipients,
+        }),
+      });
+      const data = await res.json();
+      const out = $("preview-out");
+      out.hidden = false;
+      out.className = "preview-out " + (data.matched ? "ok" : "no");
+      const hits = Object.entries(data.hits || {}).map(([name, words]) => `${name}: ${words.join(", ")}`).join("\n");
+      out.textContent = [
+        data.filtered_reason,
+        data.send_reason,
+        data.labels && data.labels.length ? "Метки: " + data.labels.join(", ") : "",
+        hits ? "Найдено\n" + hits : "Совпадений по группам нет",
+      ].filter(Boolean).join("\n\n");
+    }
+    $("settings").onclick = openSettings;
+    $("settings-cancel").onclick = () => $("overlay").classList.remove("open");
+    $("settings-save").onclick = saveSettings;
+    $("settings-preview").onclick = previewText;
+    $("overlay").addEventListener("click", (event) => {
+      if (event.target === $("overlay")) $("overlay").classList.remove("open");
+    });
+
+    refresh();
+    setInterval(refresh, 2000);
+  </script>
+</body>
+</html>
