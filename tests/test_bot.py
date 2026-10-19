@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from config import ROOT, load_settings, save_settings, settings_payload
 from matcher import match_message
-from max_api import MaxAPI, MaxAPIError
+from max_api import MaxAPI, MaxAPIError, tls_verify
 from monitor import StopFlag, drain_outbox, process_update, rematch_existing, run_monitor
 from parser import message_from_api, message_uid, normalize_channel_id, normalize_recipient
 from store import MessageStore
@@ -17,7 +17,7 @@ from store import MessageStore
 @pytest.fixture(autouse=True)
 def disable_environment_autostart(monkeypatch):
     # Never start a real worker from an inherited Docker environment in unrelated tests.
-    monkeypatch.delenv("MAX_AUTO_START", raising=False)
+    monkeypatch.setenv("MAX_AUTO_START", "")
 
 
 @pytest.fixture
@@ -261,6 +261,9 @@ def test_polling_once_recovers_durable_inbox(settings, store, monkeypatch):
         def __init__(self, *args): pass
         def me(self): return {"user_id": 1}
         def chat(self, channel_id): return {"title": "Источник"}
+        def membership(self, channel_id): return {"is_admin": True, "permissions": ["read_all_messages"]}
+        def subscriptions(self): return []
+        def messages(self, channel_id, count=100, before=None): return []
         def updates(self, marker, timeout): return {"updates": [], "marker": 123}
         def send_text(self, recipient, text): pass
         def close(self): pass
@@ -270,6 +273,123 @@ def test_polling_once_recovers_durable_inbox(settings, store, monkeypatch):
     assert store.marker("marker:1") == "123"
     assert store.pending_updates() == []
     assert store.recent_matches()[0]["sent"]
+
+
+@pytest.mark.parametrize("failure", ["membership_denied", "not_admin", "no_read_permission", "webhook_conflict"])
+def test_startup_rejects_sources_that_cannot_deliver(settings, store, monkeypatch, failure):
+    import monitor
+
+    class API:
+        def __init__(self, *args): pass
+        def me(self): return {"user_id": 1}
+        def chat(self, channel_id): return {"title": "Source", "status": "active"}
+        def subscriptions(self): return [{}] if failure == "webhook_conflict" else []
+        def membership(self, channel_id):
+            if failure == "membership_denied":
+                raise MaxAPIError(403)
+            return {"is_admin": failure != "not_admin", "permissions": []}
+        def messages(self, channel_id, **kwargs): raise MaxAPIError(403)
+        def updates(self, *args, **kwargs): pytest.fail("Must not poll inaccessible sources")
+        def close(self): pass
+
+    monkeypatch.setattr(monitor, "MaxAPI", API)
+    with pytest.raises(ValueError) as caught:
+        run_monitor(settings, store, once=True)
+    assert "Webhook" in str(caught.value) if failure == "webhook_conflict" else "-123" in str(caught.value)
+
+
+def test_membership_denied_but_readable_history_is_loaded_without_alerts(settings, store, monkeypatch):
+    import monitor
+
+    class API:
+        def __init__(self, *args): pass
+        def me(self): return {"user_id": 1}
+        def subscriptions(self): return []
+        def chat(self, channel_id): return {"title": "Source"}
+        def membership(self, channel_id): raise MaxAPIError(403)
+        def messages(self, channel_id, **kwargs): return [event()["message"]]
+        def updates(self, *args, **kwargs): pytest.fail("Unreadable event stream should use messages")
+        def send_text(self, *args): pytest.fail("Historical posts must not be sent")
+        def close(self): pass
+
+    monkeypatch.setattr(monitor, "MaxAPI", API)
+    run_monitor(settings, store, once=True)
+    assert len(store.recent_messages()) == 1
+    assert len(store.recent_matches()) == 1
+    assert store.pending_deliveries() == []
+    # Receiving the same snapshot post later through /updates cannot send it either.
+    process_update(event(), store, settings, bot_id=1)
+    assert store.pending_deliveries() == []
+
+
+def test_history_poll_new_post_after_baseline(settings, store):
+    from monitor import fetch_history
+    posts = [event()["message"]]
+
+    class API:
+        def messages(self, *args, **kwargs): return list(posts)
+
+    def drain():
+        for key, update in store.pending_updates():
+            process_update(update, store, settings, bot_id=1)
+            store.finish_update(key)
+
+    fetch_history(API(), store, "-123", 1, StopFlag())
+    drain()
+    assert store.pending_deliveries() == []
+    new = event(mid="m2")["message"]
+    new["timestamp"] += 1
+    posts.insert(0, new)
+    fetch_history(API(), store, "-123", 1, StopFlag())
+    drain()
+    assert len(store.recent_messages()) == 2
+    assert len(store.pending_deliveries()) == 2
+    fetch_history(API(), store, "-123", 1, StopFlag())
+    drain()
+    assert len(store.pending_deliveries()) == 2
+
+
+def test_history_poll_pages_back_before_checkpoint(store):
+    from monitor import fetch_history
+    store.enqueue_updates([], "1000", "history:1:-123")
+    calls = []
+
+    def post(timestamp):
+        raw = event(mid=f"m{timestamp}")["message"]
+        raw["timestamp"] = timestamp
+        return raw
+
+    class API:
+        def messages(self, channel_id, count, before):
+            calls.append(before)
+            if before is None:
+                return [post(timestamp) for timestamp in range(1100, 1000, -1)]
+            return [post(1001), post(1000)]
+
+    assert fetch_history(API(), store, "-123", 1, StopFlag()) == 101
+    assert calls == [None, 1001]
+    assert store.marker("history:1:-123") == "1100"
+    assert len(store.pending_updates()) == 100  # Queue pages are bounded, not dropped.
+
+
+def test_history_non_advancing_page_keeps_checkpoint(store):
+    from monitor import fetch_history
+    store.enqueue_updates([], "1000", "history:1:-123")
+    page = [event(mid=f"m{index}")["message"] for index in range(100)]
+
+    class API:
+        def messages(self, *args, **kwargs): return page
+
+    with pytest.raises(ValueError, match="не продвигает"):
+        fetch_history(API(), store, "-123", 1, StopFlag())
+    assert store.marker("history:1:-123") == "1000"
+
+
+def test_source_mismatch_is_reported_without_storing(settings, store):
+    update = event()
+    update["message"]["recipient"]["chat_id"] = -789
+    assert process_update(update, store, settings, bot_id=1) == "outside_sources"
+    assert store.recent_messages() == []
 
 
 def test_webhook_auth_and_persistence(settings, monkeypatch):
@@ -319,6 +439,38 @@ def test_settings_roundtrip_and_token_not_exposed(settings, tmp_path):
     assert saved.keyword_groups == settings.keyword_groups
     with pytest.raises(ValueError):
         save_settings(**{**payload, "recipients": ["chat:-123"]}, root=tmp_path)
+
+
+def test_local_env_token_and_process_override(tmp_path, monkeypatch):
+    for name in ("MAX_BOT_TOKEN", "MAX_RECEIVE_MODE", "MAX_WEBHOOK_SECRET"):
+        monkeypatch.delenv(name, raising=False)
+    (tmp_path / ".env").write_text(
+        "# Local settings\nMAX_BOT_TOKEN='file-token'\n"
+        "MAX_RECEIVE_MODE=messages\nMAX_WEBHOOK_SECRET=file-secret\n",
+        encoding="utf-8",
+    )
+    settings = load_settings(root=tmp_path)
+    assert settings.api_token == "file-token"
+    assert settings.receive_mode == "messages"
+    assert settings.webhook_secret == "file-secret"
+    assert "file-token" not in json.dumps(settings_payload(settings))
+    monkeypatch.setenv("MAX_BOT_TOKEN", "process-token")
+    assert load_settings(root=tmp_path).api_token == "process-token"
+
+
+def test_local_ca_bundle_and_explicit_override(tmp_path, monkeypatch):
+    import max_api
+
+    monkeypatch.setattr(max_api, "ROOT", tmp_path)
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    monkeypatch.delenv("SSL_CERT_DIR", raising=False)
+    assert tls_verify() is True
+    bundle = tmp_path / "certs" / "ca-bundle.pem"
+    bundle.parent.mkdir()
+    bundle.write_text("test fixture", encoding="ascii")
+    assert tls_verify() == str(bundle)
+    monkeypatch.setenv("SSL_CERT_FILE", "explicit-bundle.pem")
+    assert tls_verify() is True
 
 
 def test_rematch_clears_false_alarms_without_sending(settings, store):

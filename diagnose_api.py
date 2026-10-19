@@ -4,7 +4,7 @@ import sys
 
 import httpx
 
-from max_api import API_URL, connection_reason
+from max_api import API_URL, connection_reason, tls_verify
 from urllib.parse import urlparse
 
 
@@ -18,7 +18,7 @@ def main() -> int:
         print("DNS: ошибка разрешения имени сервера MAX")
         return 1
     try:
-        with httpx.Client(timeout=15, follow_redirects=False) as client:
+        with httpx.Client(timeout=15, follow_redirects=False, verify=tls_verify()) as client:
             response = client.get(API_URL + "/me")
     except httpx.HTTPError as exc:
         print("HTTPS: " + connection_reason(exc))

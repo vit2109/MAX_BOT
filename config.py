@@ -48,6 +48,32 @@ def _ensure_user_files() -> None:
 _ensure_user_files()
 
 
+def _local_env(root: Path) -> dict[str, str]:
+    """Read the simple KEY=value settings used by the project's .env template."""
+    path = root / ".env"
+    if not path.is_file():
+        return {}
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
+        key, separator, value = line.partition("=")
+        key = key.strip()
+        if not separator or not key or key.startswith("#"):
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
+def env_setting(name: str, *, root: Path = ROOT, default: str = "") -> str:
+    """Process environment takes precedence over .env beside the application."""
+    value = os.environ.get(name)
+    if value is None:
+        value = _local_env(root).get(name, default)
+    return value.strip()
+
+
 @dataclass(frozen=True)
 class Settings:
     interval_seconds: int
@@ -97,9 +123,9 @@ def load_settings(
         recipients=[normalize_recipient(item) for item in _load_lines(recipients_file)],
         db_path=root / "data" / "messages.sqlite",
         output_dir=root / "output",
-        api_token=os.environ.get("MAX_BOT_TOKEN", "").strip(),
-        receive_mode=os.environ.get("MAX_RECEIVE_MODE", "polling").strip().lower(),
-        webhook_secret=os.environ.get("MAX_WEBHOOK_SECRET", "").strip(),
+        api_token=env_setting("MAX_BOT_TOKEN", root=root),
+        receive_mode=env_setting("MAX_RECEIVE_MODE", root=root, default="polling").lower(),
+        webhook_secret=env_setting("MAX_WEBHOOK_SECRET", root=root),
     )
 
 

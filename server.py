@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import threading
 import hmac
 import json
@@ -13,7 +12,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from config import BUNDLE_DIR, ROOT, load_settings, save_settings, settings_payload
+from config import BUNDLE_DIR, ROOT, env_setting, load_settings, save_settings, settings_payload
 from matcher import groups_from_payload, preview_match
 from monitor import StopFlag, rematch_existing, run_monitor
 from store import MessageStore
@@ -156,7 +155,7 @@ service = MonitorService()
 
 @asynccontextmanager
 async def lifespan(_app):
-    if os.environ.get("MAX_AUTO_START", "").strip().lower() in {"1", "true", "yes", "on"}:
+    if env_setting("MAX_AUTO_START").lower() in {"1", "true", "yes", "on"}:
         service.start()
     yield
     service.stop()

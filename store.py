@@ -51,9 +51,17 @@ class MessageStore:
                 self._conn.execute("INSERT OR IGNORE INTO outbox(uid, recipient, text) VALUES (?, ?, ?)",
                                    (uid, recipient, text))
 
+    def suppress_sending(self, uid: str) -> None:
+        with self._conn:
+            self._conn.execute("UPDATE messages SET send_suppressed=1 WHERE uid=?", (uid,))
+
+    def sending_suppressed(self, uid: str) -> bool:
+        row = self._conn.execute("SELECT send_suppressed FROM messages WHERE uid=?", (uid,)).fetchone()
+        return bool(row and row[0])
+
     def pending_deliveries(self, recipients: list[str] | None = None,
                            only_critical: bool = False) -> list[tuple[str, str, str]]:
-        conditions = ["o.sent=0", "o.next_attempt <= ?", "m.matched=1"]
+        conditions = ["o.sent=0", "o.next_attempt <= ?", "m.matched=1", "m.send_suppressed=0"]
         params: list = [datetime.now().timestamp()]
         if recipients is not None:
             if not recipients:
@@ -358,6 +366,7 @@ class MessageStore:
         )
         self._ensure_column("messages", "labels", "TEXT")
         self._ensure_column("messages", "severity", "TEXT")
+        self._ensure_column("messages", "send_suppressed", "INTEGER NOT NULL DEFAULT 0")
         self._conn.commit()
 
     def _ensure_column(self, table: str, name: str, spec: str) -> None:

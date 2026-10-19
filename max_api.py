@@ -4,9 +4,20 @@ from __future__ import annotations
 import time
 import socket
 import ssl
+import os
 import httpx
 
+from config import ROOT
+
 API_URL = "https://platform-api2.max.ru"
+
+
+def tls_verify() -> str | bool:
+    """Use a local complete CA bundle unless the process selected one explicitly."""
+    if os.environ.get("SSL_CERT_FILE") or os.environ.get("SSL_CERT_DIR"):
+        return True
+    local_bundle = ROOT / "certs" / "ca-bundle.pem"
+    return str(local_bundle) if local_bundle.is_file() else True
 
 
 class MaxAPIError(RuntimeError):
@@ -31,15 +42,15 @@ def connection_reason(exc: httpx.HTTPError) -> str:
         current = current.__cause__ or current.__context__
     if any(isinstance(cause, ssl.SSLCertVerificationError) or
            "CERTIFICATE_VERIFY_FAILED" in str(cause) for cause in causes):
-        return "не пройдена проверка TLS-сертификата; проверьте доверенные CA в контейнере (SSL_CERT_FILE)"
+        return "не пройдена проверка TLS-сертификата; проверьте SSL_CERT_FILE или certs/ca-bundle.pem"
     if isinstance(exc, httpx.TimeoutException):
-        return "истекло время ожидания ответа MAX; проверьте доступ контейнера к интернету"
+        return "истекло время ожидания ответа MAX; проверьте подключение к интернету"
     if isinstance(exc, httpx.ProxyError):
         return "ошибка подключения через прокси; проверьте HTTPS_PROXY"
     if any(isinstance(cause, socket.gaierror) for cause in causes):
-        return "DNS не разрешает имя сервера MAX; проверьте DNS контейнера"
+        return "DNS не разрешает имя сервера MAX; проверьте настройки DNS"
     if isinstance(exc, httpx.ConnectError):
-        return "не удалось подключиться к MAX; проверьте сеть, DNS и прокси контейнера"
+        return "не удалось подключиться к MAX; проверьте сеть, DNS и прокси"
     return "соединение с MAX прервано до получения корректного HTTP-ответа"
 
 
@@ -48,7 +59,8 @@ class MaxAPI:
         if not token:
             raise ValueError("Задайте переменную окружения MAX_BOT_TOKEN")
         self.client = httpx.Client(base_url=API_URL, headers={"Authorization": token},
-                                   timeout=timeout, transport=transport, follow_redirects=False)
+                                   timeout=timeout, transport=transport, follow_redirects=False,
+                                   verify=tls_verify())
         self._last_send: dict[str, float] = {}
 
     def close(self):
@@ -81,6 +93,24 @@ class MaxAPI:
 
     def chat(self, channel_id: str) -> dict:
         return self.request("GET", f"/chats/{channel_id}")
+
+    def membership(self, channel_id: str) -> dict:
+        return self.request("GET", f"/chats/{channel_id}/members/me")
+
+    def subscriptions(self) -> list[dict]:
+        result = self.request("GET", "/subscriptions").get("subscriptions")
+        if not isinstance(result, list):
+            raise MaxAPIError(502)
+        return result
+
+    def messages(self, channel_id: str, count: int = 1, *, before: int | None = None) -> list[dict]:
+        params = {"chat_id": channel_id, "count": count}
+        if before is not None:
+            params["from"] = before
+        result = self.request("GET", "/messages", params=params).get("messages")
+        if not isinstance(result, list):
+            raise MaxAPIError(502)
+        return result
 
     def updates(self, marker: str | None, timeout: int = 20) -> dict:
         params = {"types": "message_created", "limit": 100, "timeout": timeout}
