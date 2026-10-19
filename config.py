@@ -8,7 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from matcher import KeywordGroup, flatten_keywords, groups_from_payload
-from parser import load_channel_ids, normalize_channel_id, normalize_recipient
+from channel_links import normalize_source
+from parser import load_channel_ids, normalize_recipient
 
 
 def _bundle_dir() -> Path:
@@ -210,7 +211,7 @@ def _clean_ids(values: list[str]) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
     for item in _clean_lines(values):
-        normalized = normalize_channel_id(item)
+        normalized = normalize_source(item)
         if normalized and normalized not in seen:
             result.append(normalized)
             seen.add(normalized)

@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from config import ROOT, load_settings, save_settings, settings_payload
+from channel_links import normalize_source
 from matcher import match_message
 from max_api import MaxAPI, MaxAPIError, tls_verify
 from monitor import StopFlag, drain_outbox, process_update, rematch_existing, run_monitor
@@ -89,6 +90,35 @@ def test_ids_and_stable_message_id():
     raw["body"]["text"] = "edited"
     assert message_uid("-123", message_from_api(raw)) == uid
     assert message.datetime.endswith("+00:00")
+
+
+def test_public_channel_link_resolves_and_is_saved(settings, tmp_path, monkeypatch):
+    url = "https://max.ru/telecommunal"
+    page = '<script>channelId:68549099550042}},canonical:"https://max.ru/telecommunal"</script>'
+
+    def handler(request):
+        assert str(request.url) == url
+        return httpx.Response(200, headers={"content-type": "text/html"}, text=page)
+
+    assert normalize_source(url, transport=httpx.MockTransport(handler)) == "-68549099550042"
+    assert normalize_source("https://web.max.ru/-68549099550042") == "-68549099550042"
+    import channel_links
+    monkeypatch.setattr(channel_links, "resolve_public_channel_id", lambda slug, **_: "-68549099550042")
+    payload = settings_payload(settings)
+    payload.pop("receive_mode")
+    payload.pop("token_configured")
+    saved = save_settings(**{**payload, "channels": [url]}, root=tmp_path)
+    assert saved.channels == ["-68549099550042"]
+    assert "-68549099550042" in (tmp_path / "channels.txt").read_text(encoding="utf-8")
+
+
+def test_public_channel_link_rejects_wrong_page():
+    def handler(request):
+        return httpx.Response(200, headers={"content-type": "text/html"},
+                              text='channelId:123,canonical:"https://max.ru/another"')
+
+    with pytest.raises(ValueError, match="Не удалось определить chat_id"):
+        normalize_source("https://max.ru/telecommunal", transport=httpx.MockTransport(handler))
 
 
 def test_forward_text_and_reply_context():

@@ -262,7 +262,7 @@
       <div class="grid-2">
         <label>Источники API (числовой chat_id, требуется доступ к чтению)
           <textarea id="set-channels" placeholder="-69447423358448"></textarea>
-          <span>Ссылка вида max.ru/имя_канала не содержит chat_id. <a href="https://dev.max.ru/docs-api/use-cases/getting-chat-id" target="_blank" rel="noopener noreferrer">Как получить ID канала</a></span>
+          <span>Можно вставить публичную ссылку max.ru/имя_канала: при сохранении она преобразуется в chat_id. Для чтения постов бот должен иметь доступ к каналу. <a href="https://dev.max.ru/docs-api/use-cases/getting-chat-id" target="_blank" rel="noopener noreferrer">Как получить ID вручную</a></span>
         </label>
         <label>Адресаты: chat:-123 для чата, user:123 для пользователя
           <textarea id="set-recipients" placeholder="user:123456789"></textarea>
@@ -430,10 +430,11 @@
       };
     }
     async function saveSettings() {
+      const payload = settingsPayload();
       const res = await fetch("/api/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(settingsPayload()),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }));
@@ -446,7 +447,8 @@
       const data = await res.json();
       $("overlay").classList.remove("open");
       const extra = data.rematched ? `, в ленте отмечено ${data.rematched} совпадений из базы` : "";
-      showToast("Настройки сохранены" + extra);
+      const resolved = payload.channels.some((item) => /^https:\/\/max\.ru\/[A-Za-z_]/i.test(item));
+      showToast("Настройки сохранены" + (resolved ? "; ссылки преобразованы в chat_id" : "") + extra);
       refresh();
     }
     async function previewText() {
