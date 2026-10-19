@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Вход — MAX монитор</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 20px;
+      background: #10141c; color: #e8eef7; font-family: Segoe UI, Tahoma, sans-serif; }
+    main { width: min(380px, 100%); padding: 28px; background: #181e29;
+      border: 1px solid #2a3344; border-radius: 14px; }
+    h1 { margin: 0 0 24px; font-size: 22px; }
+    label { display: block; margin: 0 0 16px; color: #a8b4c6; font-size: 14px; }
+    input { display: block; width: 100%; margin-top: 7px; padding: 10px 12px;
+      color: #e8eef7; background: #10151e; border: 1px solid #39465b; border-radius: 8px; font: inherit; }
+    button { width: 100%; padding: 11px; color: #fff; background: #1f4b8f;
+      border: 1px solid #2d63b8; border-radius: 8px; font: inherit; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: default; }
+    #error { min-height: 20px; margin: 14px 0 0; color: #ffaaa2; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>MAX монитор</h1>
+    <form id="login-form">
+      <label>Логин<input id="username" autocomplete="username" required autofocus></label>
+      <label>Пароль<input id="password" type="password" autocomplete="current-password" required></label>
+      <button id="submit" type="submit">Войти</button>
+      <p id="error" role="alert"></p>
+    </form>
+  </main>
+  <script>
+    document.getElementById("login-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = document.getElementById("submit");
+      const error = document.getElementById("error");
+      button.disabled = true;
+      error.textContent = "";
+      try {
+        const response = await fetch("/api/login", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username: document.getElementById("username").value,
+            password: document.getElementById("password").value,
+          }),
+        });
+        if (response.ok) { location.assign("/"); return; }
+        const result = await response.json();
+        error.textContent = result.detail || "Не удалось войти";
+      } catch (_) { error.textContent = "Не удалось подключиться к серверу"; }
+      finally { button.disabled = false; }
+    });
+  </script>
+</body>
+</html>

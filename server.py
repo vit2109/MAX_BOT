@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 import asyncio
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -16,6 +16,7 @@ from config import BUNDLE_DIR, ROOT, env_setting, load_settings, save_settings, 
 from matcher import groups_from_payload, preview_match
 from monitor import StopFlag, rematch_existing, run_monitor
 from store import MessageStore
+import auth
 
 log = logging.getLogger("max_monitor")
 WEB_DIR = BUNDLE_DIR / "web"
@@ -85,7 +86,7 @@ class MonitorService:
         try:
             settings = load_settings()
             if not settings.channels:
-                self._set_state("error", "Файл channels.txt пуст.")
+                self._set_state("error", "Список источников пуст. Добавьте каналы в настройках.")
                 return
             store = MessageStore(settings.db_path)
             run_monitor(
@@ -166,6 +167,21 @@ async def lifespan(_app):
 
 app = FastAPI(title="MAX монитор", lifespan=lifespan)
 
+
+@app.middleware("http")
+async def require_web_login(request: Request, call_next):
+    path = request.url.path
+    ip = request.client.host if request.client else "unknown"
+    if path in {"/", "/login"} and request.method == "GET":
+        auth.record_access("visit", ip)
+    if path in {"/login", "/api/login", "/api/health", "/webhook"}:
+        return await call_next(request)
+    if not auth.authenticated(request.cookies.get(auth.COOKIE_NAME)):
+        if path == "/" and request.method == "GET":
+            return RedirectResponse("/login", status_code=303)
+        return JSONResponse({"detail": "Требуется вход"}, status_code=401)
+    return await call_next(request)
+
 if WEB_DIR.exists():
     app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
@@ -176,6 +192,47 @@ def index() -> FileResponse:
     if not page.exists():
         raise HTTPException(status_code=500, detail="Не найден web/index.html")
     return FileResponse(page)
+
+
+@app.get("/login")
+def login_page() -> FileResponse:
+    return FileResponse(WEB_DIR / "login.html")
+
+
+class LoginPayload(BaseModel):
+    username: str = Field(max_length=100)
+    password: str = Field(max_length=1024)
+
+
+@app.post("/api/login")
+def login(payload: LoginPayload, request: Request):
+    ip = request.client.host if request.client else "unknown"
+    if not auth.configured():
+        auth.record_access("login_unconfigured", ip, username=payload.username)
+        raise HTTPException(status_code=503, detail="Укажите MAX_WEB_USER и MAX_WEB_PASSWORD")
+    token = auth.authenticate(payload.username, payload.password)
+    auth.record_access("login_success" if token else "login_failure", ip, username=payload.username)
+    if token is None:
+        raise HTTPException(status_code=401, detail="Неверный логин или пароль")
+    response = JSONResponse({"ok": True})
+    response.set_cookie(
+        auth.COOKIE_NAME, token, max_age=auth.SESSION_SECONDS,
+        httponly=True, secure=request.url.scheme == "https", samesite="strict", path="/",
+    )
+    return response
+
+
+@app.post("/api/logout")
+def logout(request: Request):
+    auth.logout(request.cookies.get(auth.COOKIE_NAME))
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(auth.COOKIE_NAME, path="/")
+    return response
+
+
+@app.get("/api/health")
+def health() -> dict:
+    return {"ok": True}
 
 
 @app.get("/api/feed")

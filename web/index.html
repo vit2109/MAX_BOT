@@ -227,6 +227,7 @@
       <h1>MAX монитор</h1>
       <div id="status" class="status">Загрузка…</div>
       <div class="spacer"></div>
+      <button id="logout">Выйти</button>
       <button id="settings">Настройки</button>
       <button id="start" class="primary">Старт</button>
       <button id="stop" disabled>Стоп</button>
@@ -378,8 +379,14 @@
 
     async function refresh() {
       const res = await fetch("/api/feed");
+      if (res.status === 401) { location.assign("/login"); return; }
       render(await res.json());
     }
+
+    $("logout").onclick = async () => {
+      await fetch("/api/logout", { method: "POST" });
+      location.assign("/login");
+    };
 
     $("start").onclick = async () => {
       await fetch("/api/start", { method: "POST" });
@@ -401,7 +408,12 @@
       setTimeout(() => { el.style.display = "none"; }, error ? 8000 : 2500);
     }
     async function openSettings() {
-      const data = await (await fetch("/api/settings")).json();
+      let response;
+      try { response = await fetch("/api/settings"); }
+      catch (_) { showToast("Не удалось загрузить настройки", true); return; }
+      if (response.status === 401) { location.assign("/login"); return; }
+      if (!response.ok) { showToast("Не удалось загрузить настройки", true); return; }
+      const data = await response.json();
       $("set-channels").value = (data.channels || []).join("\n");
       $("set-recipients").value = (data.recipients || []).join("\n");
       const byId = Object.fromEntries((data.keyword_groups || []).map((g) => [g.id, g]));

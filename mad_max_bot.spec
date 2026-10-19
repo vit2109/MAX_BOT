@@ -6,6 +6,7 @@ spec_dir = Path(SPECPATH)
 a = Analysis(
     [str(spec_dir / "main.py")], pathex=[str(spec_dir)], binaries=[],
     datas=[(str(spec_dir / "web" / "index.html"), "web"),
+           (str(spec_dir / "web" / "login.html"), "web"),
            *[(str(spec_dir / name), ".") for name in
              ("config.ini", "channels.txt", "keywords.txt", "keywords.json", "recipients.txt")]],
     hiddenimports=collect_submodules("uvicorn"),

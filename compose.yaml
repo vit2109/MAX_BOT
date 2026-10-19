@@ -10,6 +10,8 @@ services:
       MAX_BOT_TOKEN: "${MAX_BOT_TOKEN:?Set MAX_BOT_TOKEN in .env}"
       MAX_RECEIVE_MODE: "${MAX_RECEIVE_MODE:-polling}"
       MAX_WEBHOOK_SECRET: "${MAX_WEBHOOK_SECRET:-}"
+      MAX_WEB_USER: "${MAX_WEB_USER:?Set MAX_WEB_USER in .env}"
+      MAX_WEB_PASSWORD: "${MAX_WEB_PASSWORD:?Set MAX_WEB_PASSWORD in .env}"
       MAX_AUTO_START: "${MAX_AUTO_START:-true}"
     ports:
       - "127.0.0.1:${MAX_WEB_PORT:-8000}:8000"
@@ -42,7 +44,7 @@ services:
         bind:
           create_host_path: false
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/feed', timeout=5).read()"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5).read()"]
       interval: 30s
       timeout: 10s
       start_period: 15s

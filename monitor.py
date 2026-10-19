@@ -50,7 +50,7 @@ def process_update(update: dict, store: MessageStore, settings: Settings, bot_id
     raw = update.get("message") or {}
     channel_id = str((raw.get("recipient") or {}).get("chat_id") or "")
     if channel_id not in settings.channels:
-        log.info("Событие из источника %s пропущено: ID отсутствует в channels.txt", channel_id or "без chat_id")
+        log.info("Событие из источника %s пропущено: ID отсутствует в настройках", channel_id or "без chat_id")
         return "outside_sources"
     if (raw.get("sender") or {}).get("user_id") == bot_id:
         return "own_message"

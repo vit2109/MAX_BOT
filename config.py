@@ -3,6 +3,7 @@ from __future__ import annotations
 import configparser
 import json
 import os
+import sqlite3
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -101,6 +102,36 @@ def load_settings(
     keywords_path: Path | None = None,
     recipients_path: Path | None = None,
 ) -> Settings:
+    db_path = root / "data" / "settings.sqlite"
+    values = _stored_settings(
+        db_path, root, config_path=config_path, channels_path=channels_path,
+        keywords_path=keywords_path, recipients_path=recipients_path,
+    )
+    groups = groups_from_payload(values["keyword_groups"])
+
+    return Settings(
+        interval_seconds=values["interval_seconds"],
+        channel_timeout=values["channel_timeout"],
+        min_keyword_hits=values["min_keyword_hits"],
+        send_enabled=values["send_enabled"],
+        send_only_critical=values["send_only_critical"],
+        channels=values["channels"],
+        keywords=flatten_keywords(groups),
+        keyword_groups=groups,
+        recipients=values["recipients"],
+        db_path=root / "data" / "messages.sqlite",
+        output_dir=root / "output",
+        api_token=env_setting("MAX_BOT_TOKEN", root=root),
+        receive_mode=env_setting("MAX_RECEIVE_MODE", root=root, default="polling").lower(),
+        webhook_secret=env_setting("MAX_WEBHOOK_SECRET", root=root),
+    )
+
+
+def _legacy_settings(
+    root: Path, *, config_path: Path | None, channels_path: Path | None,
+    keywords_path: Path | None, recipients_path: Path | None,
+) -> dict:
+    """Read the former files once when a settings database is first created."""
     config_path = config_path or root / "config.ini"
     parser = configparser.ConfigParser()
     if config_path.exists():
@@ -112,22 +143,34 @@ def load_settings(
     recipients_file = recipients_path or root / "recipients.txt"
     groups = _load_keyword_groups(root, keywords_file)
 
-    return Settings(
-        interval_seconds=_int(monitor, "interval_seconds", 30),
-        channel_timeout=_int(monitor, "channel_timeout", 30),
-        min_keyword_hits=_int(monitor, "min_keyword_hits", 1),
-        send_enabled=_bool(monitor, "send_enabled", True),
-        send_only_critical=_bool(monitor, "send_only_critical", False),
-        channels=load_channel_ids(channels_file) if channels_file.exists() else [],
-        keywords=flatten_keywords(groups),
-        keyword_groups=groups,
-        recipients=[normalize_recipient(item) for item in _load_lines(recipients_file)],
-        db_path=root / "data" / "messages.sqlite",
-        output_dir=root / "output",
-        api_token=env_setting("MAX_BOT_TOKEN", root=root),
-        receive_mode=env_setting("MAX_RECEIVE_MODE", root=root, default="polling").lower(),
-        webhook_secret=env_setting("MAX_WEBHOOK_SECRET", root=root),
-    )
+    return {
+        "interval_seconds": _int(monitor, "interval_seconds", 30),
+        "channel_timeout": _int(monitor, "channel_timeout", 30),
+        "min_keyword_hits": _int(monitor, "min_keyword_hits", 1),
+        "send_enabled": _bool(monitor, "send_enabled", True),
+        "send_only_critical": _bool(monitor, "send_only_critical", False),
+        "channels": load_channel_ids(channels_file) if channels_file.exists() else [],
+        "keyword_groups": _group_payload(groups),
+        "recipients": [normalize_recipient(item) for item in _load_lines(recipients_file)],
+    }
+
+
+def _stored_settings(db_path: Path, root: Path, **legacy_paths) -> dict:
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path, timeout=30) as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS app_settings (id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL)")
+        row = conn.execute("SELECT payload FROM app_settings WHERE id = 1").fetchone()
+        if row is None:
+            initial = _legacy_settings(root, **legacy_paths)
+            conn.execute("INSERT OR IGNORE INTO app_settings (id, payload) VALUES (1, ?)",
+                         (json.dumps(initial, ensure_ascii=False),))
+            row = conn.execute("SELECT payload FROM app_settings WHERE id = 1").fetchone()
+    return json.loads(row[0])
+
+
+def _group_payload(groups: list[KeywordGroup]) -> list[dict]:
+    return [{"id": group.id, "name": group.name, "role": group.role,
+             "keywords": list(group.keywords)} for group in groups]
 
 
 def settings_payload(settings: Settings | None = None) -> dict:
@@ -142,15 +185,7 @@ def settings_payload(settings: Settings | None = None) -> dict:
         "send_only_critical": current.send_only_critical,
         "channels": list(current.channels),
         "keywords": list(current.keywords),
-        "keyword_groups": [
-            {
-                "id": group.id,
-                "name": group.name,
-                "role": group.role,
-                "keywords": list(group.keywords),
-            }
-            for group in current.keyword_groups
-        ],
+        "keyword_groups": _group_payload(current.keyword_groups),
         "recipients": list(current.recipients),
     }
 
@@ -180,30 +215,23 @@ def save_settings(
     if min_keyword_hits < 1 or min_keyword_hits > 20:
         raise ValueError("min_keyword_hits должен быть от 1 до 20")
 
-    _write_ini(
-        root / "config.ini",
-        interval_seconds=interval_seconds,
-        channel_timeout=channel_timeout,
-        min_keyword_hits=min_keyword_hits,
-        send_enabled=send_enabled,
-        send_only_critical=send_only_critical,
-    )
-    _write_lines(
-        root / "channels.txt",
-        channels,
-        "# id канала или полный URL веб-версии, по одному в строке",
-    )
-    _write_lines(
-        root / "keywords.txt",
-        flatten_keywords(groups),
-        "# Плоский список всех ключевых слов. Источник групп — keywords.json",
-    )
-    _write_keyword_groups(root / "keywords.json", groups)
-    _write_lines(
-        root / "recipients.txt",
-        recipients,
-        "# Адресаты Bot API: chat:-123456789 или user:123456789",
-    )
+    values = {
+        "interval_seconds": interval_seconds,
+        "channel_timeout": channel_timeout,
+        "min_keyword_hits": min_keyword_hits,
+        "send_enabled": send_enabled,
+        "send_only_critical": send_only_critical,
+        "channels": channels,
+        "keyword_groups": _group_payload(groups),
+        "recipients": recipients,
+    }
+    db_path = root / "data" / "settings.sqlite"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path, timeout=30) as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS app_settings (id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL)")
+        conn.execute("INSERT INTO app_settings (id, payload) VALUES (1, ?) "
+                     "ON CONFLICT(id) DO UPDATE SET payload = excluded.payload",
+                     (json.dumps(values, ensure_ascii=False),))
     return load_settings(root=root)
 
 
@@ -229,39 +257,6 @@ def _clean_lines(values: list[str]) -> list[str]:
     return result
 
 
-def _write_lines(path: Path, values: list[str], header: str) -> None:
-    body = "\n".join(values)
-    path.write_text(f"{header}\n{body}\n" if body else f"{header}\n", encoding="utf-8")
-
-
-def _write_ini(
-    path: Path,
-    *,
-    interval_seconds: int,
-    channel_timeout: int,
-    min_keyword_hits: int,
-    send_enabled: bool,
-    send_only_critical: bool = False,
-) -> None:
-    enabled = "true" if send_enabled else "false"
-    only_critical = "true" if send_only_critical else "false"
-    path.write_text(
-        (
-            "[monitor]\n"
-            "; Базовая пауза при временных ошибках API, секунды\n"
-            f"interval_seconds = {interval_seconds}\n"
-            f"channel_timeout = {channel_timeout}\n"
-            "; Сколько ключевых слов должно совпасть, чтобы отправить сообщение\n"
-            f"min_keyword_hits = {min_keyword_hits}\n"
-            "; Отправка совпадений через официальный Bot API MAX\n"
-            f"send_enabled = {enabled}\n"
-            "; Слать только критические аварийные сообщения\n"
-            f"send_only_critical = {only_critical}\n"
-        ),
-        encoding="utf-8",
-    )
-
-
 def _load_keyword_groups(root: Path, keywords_file: Path) -> list[KeywordGroup]:
     json_path = root / "keywords.json"
     raw_groups: list[dict] = []
@@ -270,21 +265,6 @@ def _load_keyword_groups(root: Path, keywords_file: Path) -> list[KeywordGroup]:
         raw_groups = data if isinstance(data, list) else data.get("groups", [])
     fallback = _load_lines(keywords_file) if keywords_file.exists() else []
     return groups_from_payload(raw_groups, fallback_keywords=fallback)
-
-
-def _write_keyword_groups(path: Path, groups: list[KeywordGroup]) -> None:
-    payload = {
-        "groups": [
-            {
-                "id": group.id,
-                "name": group.name,
-                "role": group.role,
-                "keywords": list(group.keywords),
-            }
-            for group in groups
-        ]
-    }
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def _load_lines(path: Path) -> list[str]:

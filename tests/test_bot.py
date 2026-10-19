@@ -1,5 +1,6 @@
 from dataclasses import replace
 import json
+import sqlite3
 from pathlib import Path
 
 import httpx
@@ -109,7 +110,7 @@ def test_public_channel_link_resolves_and_is_saved(settings, tmp_path, monkeypat
     payload.pop("token_configured")
     saved = save_settings(**{**payload, "channels": [url]}, root=tmp_path)
     assert saved.channels == ["-68549099550042"]
-    assert "-68549099550042" in (tmp_path / "channels.txt").read_text(encoding="utf-8")
+    assert load_settings(root=tmp_path).channels == ["-68549099550042"]
 
 
 def test_public_channel_link_rejects_wrong_page():
@@ -447,7 +448,10 @@ def test_webhook_auth_and_persistence(settings, monkeypatch):
 def test_panel_feed_and_preview(settings, monkeypatch):
     import server
     monkeypatch.setattr(server, "load_settings", lambda: settings)
+    monkeypatch.setenv("MAX_WEB_USER", "admin")
+    monkeypatch.setenv("MAX_WEB_PASSWORD", "test-password")
     with TestClient(server.app) as client:
+        assert client.post("/api/login", json={"username": "admin", "password": "test-password"}).status_code == 200
         assert client.get("/").status_code == 200
         response = client.get("/api/feed")
         assert response.status_code == 200
@@ -460,6 +464,53 @@ def test_panel_feed_and_preview(settings, monkeypatch):
         assert result["matched"] and result["would_send"]
 
 
+def test_web_login_guards_api_and_records_ip(tmp_path, monkeypatch):
+    import auth
+    import server
+
+    monkeypatch.setattr(auth, "ACCESS_LOG", tmp_path / "access.jsonl")
+    monkeypatch.setenv("MAX_WEB_USER", "operator")
+    monkeypatch.setenv("MAX_WEB_PASSWORD", "long-test-password")
+    with TestClient(server.app, client=("192.0.2.10", 12345)) as client:
+        assert client.get("/", follow_redirects=False).status_code == 303
+        assert client.get("/login").status_code == 200
+        assert client.get("/api/feed").status_code == 401
+        assert client.get("/api/settings").status_code == 401
+        assert client.post("/api/start").status_code == 401
+        assert client.get("/api/health").status_code == 200
+        wrong = client.post("/api/login", json={"username": "operator", "password": "wrong"})
+        assert wrong.status_code == 401
+        assert auth.COOKIE_NAME not in wrong.cookies
+        good = client.post("/api/login", json={"username": "operator", "password": "long-test-password"})
+        assert good.status_code == 200
+        assert good.cookies.get(auth.COOKIE_NAME)
+        assert "httponly" in good.headers["set-cookie"].lower()
+        assert "samesite=strict" in good.headers["set-cookie"].lower()
+        assert client.get("/").status_code == 200
+        assert client.get("/api/settings").status_code == 200
+        assert client.post("/api/logout").status_code == 200
+        assert client.get("/api/settings").status_code == 401
+
+    rows = [json.loads(line) for line in auth.ACCESS_LOG.read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in rows] == [
+        "visit", "visit", "login_failure", "login_success", "visit",
+    ]
+    assert all(row["ip"] == "192.0.2.10" for row in rows)
+    assert "long-test-password" not in auth.ACCESS_LOG.read_text(encoding="utf-8")
+
+
+def test_web_login_fails_closed_without_credentials(monkeypatch, tmp_path):
+    import auth
+    import server
+
+    monkeypatch.setattr(auth, "ACCESS_LOG", tmp_path / "access.jsonl")
+    monkeypatch.setenv("MAX_WEB_USER", "")
+    monkeypatch.setenv("MAX_WEB_PASSWORD", "")
+    with TestClient(server.app) as client:
+        assert client.get("/api/feed").status_code == 401
+        assert client.post("/api/login", json={"username": "x", "password": "y"}).status_code == 503
+
+
 def test_settings_roundtrip_and_token_not_exposed(settings, tmp_path):
     assert "test-token" not in json.dumps(settings_payload(settings))
     assert "test-token" not in repr(settings)
@@ -470,8 +521,78 @@ def test_settings_roundtrip_and_token_not_exposed(settings, tmp_path):
     assert saved.channels == settings.channels
     assert saved.recipients == settings.recipients
     assert saved.keyword_groups == settings.keyword_groups
+    with sqlite3.connect(tmp_path / "data" / "settings.sqlite") as conn:
+        row = conn.execute("SELECT payload FROM app_settings WHERE id=1").fetchone()
+    assert json.loads(row[0])["recipients"] == settings.recipients
+    assert not (tmp_path / "keywords.json").exists()
     with pytest.raises(ValueError):
         save_settings(**{**payload, "recipients": ["chat:-123"]}, root=tmp_path)
+
+
+def test_settings_migrate_once_from_files_and_keep_all_groups(tmp_path):
+    (tmp_path / "config.ini").write_text("[monitor]\ninterval_seconds=17\nchannel_timeout=42\n"
+                                           "min_keyword_hits=2\nsend_enabled=false\n"
+                                           "send_only_critical=true\n", encoding="utf-8")
+    (tmp_path / "channels.txt").write_text("-123\n", encoding="utf-8")
+    (tmp_path / "recipients.txt").write_text("user:99\n", encoding="utf-8")
+    (tmp_path / "keywords.json").write_text(json.dumps({"groups": [
+        {"id": gid, "keywords": [f"слово-{gid}"]} for gid in range(1, 6)
+    ]}, ensure_ascii=False), encoding="utf-8")
+    initial = load_settings(root=tmp_path)
+    assert initial.interval_seconds == 17
+    assert initial.channel_timeout == 42
+    assert initial.min_keyword_hits == 2
+    assert not initial.send_enabled and initial.send_only_critical
+    assert initial.channels == ["-123"] and initial.recipients == ["user:99"]
+    assert [group.keywords for group in initial.keyword_groups] == [
+        [f"слово-{gid}"] for gid in range(1, 6)
+    ]
+
+    (tmp_path / "keywords.json").unlink()
+    (tmp_path / "channels.txt").write_text("-456\n", encoding="utf-8")
+    again = load_settings(root=tmp_path)
+    assert again.channels == ["-123"]
+    assert again.keyword_groups == initial.keyword_groups
+    updated = save_settings(
+        interval_seconds=21, channel_timeout=42, min_keyword_hits=2,
+        send_enabled=False, send_only_critical=True, channels=["-789"],
+        recipients=["user:99"], keyword_groups=[
+            {"id": group.id, "keywords": group.keywords} for group in initial.keyword_groups
+        ], root=tmp_path,
+    )
+    assert updated.channels == ["-789"]
+    assert (tmp_path / "channels.txt").read_text(encoding="utf-8") == "-456\n"
+
+
+def test_settings_api_roundtrip_all_fields(tmp_path, monkeypatch):
+    import config
+    import server
+
+    monkeypatch.setenv("MAX_WEB_USER", "admin")
+    monkeypatch.setenv("MAX_WEB_PASSWORD", "test-password")
+    monkeypatch.setattr(server, "load_settings", lambda: config.load_settings(root=tmp_path))
+    monkeypatch.setattr(server, "save_settings", lambda **values: config.save_settings(root=tmp_path, **values))
+    monkeypatch.setattr(server, "settings_payload", lambda value=None: config.settings_payload(
+        value if value is not None else config.load_settings(root=tmp_path)))
+    payload = {
+        "interval_seconds": 15, "channel_timeout": 45, "min_keyword_hits": 3,
+        "send_enabled": False, "send_only_critical": True,
+        "channels": ["-123"], "recipients": ["user:42"],
+        "keyword_groups": [{"id": gid, "keywords": [f"term-{gid}"]} for gid in range(1, 6)],
+    }
+    with TestClient(server.app) as client:
+        assert client.post("/api/login", json={"username": "admin", "password": "test-password"}).status_code == 200
+        response = client.put("/api/settings", json=payload)
+        assert response.status_code == 200
+        loaded = client.get("/api/settings")
+        assert loaded.status_code == 200
+        saved = loaded.json()
+    for field in ("interval_seconds", "channel_timeout", "min_keyword_hits",
+                  "send_enabled", "send_only_critical", "channels", "recipients"):
+        assert saved[field] == payload[field]
+    assert [group["keywords"] for group in saved["keyword_groups"]] == [
+        [f"term-{gid}"] for gid in range(1, 6)
+    ]
 
 
 def test_local_env_token_and_process_override(tmp_path, monkeypatch):

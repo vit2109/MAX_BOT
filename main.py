@@ -45,7 +45,7 @@ def run_cli(args: argparse.Namespace) -> int:
     if args.no_send:
         settings = replace(settings, send_enabled=False)
     if not settings.channels:
-        logging.error("Файл channels.txt пуст.")
+        logging.error("Список источников пуст. Добавьте каналы в настройках.")
         return 1
     store = MessageStore(settings.db_path)
     try:
