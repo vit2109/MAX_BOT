@@ -64,6 +64,12 @@ def normalize_channel_id(value: str) -> str:
         if parsed.hostname not in {"web.max.ru", "max.ru"}:
             raise ValueError("Ожидается числовой ID MAX или ссылка max.ru с числовым ID")
         value = parsed.path.strip("/")
+        if value and not re.fullmatch(r"-?[1-9]\d*", value):
+            raise ValueError(
+                "Публичная ссылка max.ru/имя_канала не содержит chat_id. "
+                "Добавьте бота в канал и укажите числовой chat_id из события bot_added "
+                "(или ссылку web.max.ru/-123456789)."
+            )
     if not re.fullmatch(r"-?[1-9]\d*", value):
         raise ValueError("ID MAX должен быть ненулевым целым числом; «0 / избранное» Bot API не поддерживает")
     return str(int(value))

@@ -262,6 +262,7 @@
       <div class="grid-2">
         <label>Источники API (числовой chat_id, требуется доступ к чтению)
           <textarea id="set-channels" placeholder="-69447423358448"></textarea>
+          <span>Ссылка вида max.ru/имя_канала не содержит chat_id. <a href="https://dev.max.ru/docs-api/use-cases/getting-chat-id" target="_blank" rel="noopener noreferrer">Как получить ID канала</a></span>
         </label>
         <label>Адресаты: chat:-123 для чата, user:123 для пользователя
           <textarea id="set-recipients" placeholder="user:123456789"></textarea>
@@ -397,7 +398,7 @@
       el.textContent = text;
       el.className = "toast" + (error ? " error" : "");
       el.style.display = "block";
-      setTimeout(() => { el.style.display = "none"; }, 2500);
+      setTimeout(() => { el.style.display = "none"; }, error ? 8000 : 2500);
     }
     async function openSettings() {
       const data = await (await fetch("/api/settings")).json();

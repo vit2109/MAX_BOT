@@ -156,6 +156,9 @@ uv run python diagnose_api.py
 `channels.txt`: по одному числовому `chat_id` на строку. Поддерживаются прежние ссылки
 `https://web.max.ru/-123456789`, если последний компонент — числовой ID.
 Именные и пригласительные ссылки нельзя использовать вместо API ID.
+Чтобы получить ID для ссылки `https://max.ru/имя_канала`, добавьте бота в канал:
+согласно [документации MAX](https://dev.max.ru/docs-api/use-cases/getting-chat-id),
+`chat_id` приходит в событии `bot_added` через `/updates` или Webhook.
 
 `recipients.txt`:
 

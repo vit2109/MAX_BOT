@@ -75,11 +75,14 @@ def test_incident_classification(settings, text, severity):
 
 def test_ids_and_stable_message_id():
     assert normalize_channel_id("https://web.max.ru/-123?x=1") == "-123"
+    assert normalize_channel_id("https://max.ru/-123/") == "-123"
     assert normalize_recipient("user:42") == "user:42"
     assert normalize_recipient("-123") == "chat:-123"
     for value in ["0", "foo", "https://example.com/-123"]:
         with pytest.raises(ValueError):
             normalize_channel_id(value)
+    with pytest.raises(ValueError, match="не содержит chat_id"):
+        normalize_channel_id("https://max.ru/channel_example")
     raw = event()["message"]
     message = message_from_api(raw)
     uid = message_uid("-123", message)
