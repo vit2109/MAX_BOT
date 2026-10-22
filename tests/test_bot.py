@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from config import ROOT, load_settings, save_settings, settings_payload
 from channel_links import normalize_source
-from matcher import match_message
+from matcher import match_message, preview_match
 from max_api import MaxAPI, MaxAPIError, tls_verify
 from monitor import StopFlag, drain_outbox, process_update, rematch_existing, run_monitor
 from parser import message_from_api, message_uid, normalize_channel_id, normalize_recipient
@@ -73,6 +73,88 @@ def test_incident_classification(settings, text, severity):
     result = match_message(text, settings.keyword_groups)
     assert result.severity == severity
     assert result.matched == (severity != "none")
+
+
+@pytest.mark.parametrize("text", [
+    ("Доступ к системе есть только у операторов связи, а плановые перерывы в ее работе "
+     "достигают 10 часов. Предлагается блокировать один номер: отключение всех номеров "
+     "опасно для медприборов. АКИТ объединяет компании интернет-торговли."),
+    ("Иран намекнул на возможность повреждения кабелей в Ормузском проливе. "
+     "Через эти кабели проходят интернет-данные. Связность упадет в случае повреждения "
+     "магистралей у соседних стран."),
+    "ВОЛС может быть повреждена при обострении конфликта",
+    "МТС рассказал, как избежать сбоев связи",
+    "У МТС нет аварий, интернет работает стабильно",
+    "Билайн восстановил связь после вчерашнего сбоя",
+    "Плановые работы: отключение интернета в Москве",
+])
+def test_news_without_current_telecom_incident_is_not_sendable(settings, text):
+    assert not match_message(text, settings.keyword_groups).sendable
+
+
+@pytest.mark.parametrize("text", [
+    "В Москве авария на ВОЛС, интернет не работает",
+    "У Ростелекома массовый сбой в Москве",
+    "ВОЛС повреждена, у жителей нет интернета",
+    "Связь МТС восстановлена, но интернет не работает",
+])
+def test_current_telecom_incident_is_sendable(settings, text):
+    assert match_message(text, settings.keyword_groups).sendable
+
+
+def test_preview_and_old_outbox_respect_incident_gate(settings, store):
+    text = "Иран обсуждает возможность повреждения кабелей, передающих интернет-данные"
+    preview = preview_match(text, settings.keyword_groups, send_enabled=True, has_recipients=True)
+    assert preview["matched"]
+    assert not preview["would_send"]
+    process_update(event(text=text), store, settings, bot_id=1)
+    assert store.pending_deliveries() == []
+    uid = store.recent_matches()[0]["uid"]
+    store.queue_alert(uid, ["user:42"], "старое оповещение")
+    store.mark_matched(uid, ["интернет", "поврежд"], ["критическое"], "critical", True)
+    rematch_existing(store, settings)
+    assert store.pending_deliveries() == []
+
+
+def test_all_news_filters_search_archive_before_limit(store):
+    from datetime import datetime, timezone
+
+    entries = [
+        ("old", "МТС открыл офис", "-123", 1700000000000),
+        ("incident", "Авария ВОЛС в Москве", "-123", 1700000060000),
+        ("latest", "Ростелеком сообщил: СБОЙ связи", "-456", 1700000120000),
+    ]
+    uids = {}
+    for mid, text, channel, timestamp in entries:
+        raw = event(mid=mid, text=text)["message"]
+        raw["timestamp"] = timestamp
+        parsed = message_from_api(raw)
+        uids[mid] = store.insert_new(channel, [parsed], datetime.now(timezone.utc))[0][0]
+    store.mark_matched(uids["incident"], ["ВОЛС", "авария"], severity="critical")
+    store.mark_matched(uids["latest"], ["Ростелеком", "сбой"], severity="critical", sendable=True)
+    store.mark_sent(uids["latest"], datetime.now(timezone.utc))
+
+    assert [row["uid"] for row in store.recent_messages(1, search="сбой")] == [uids["latest"]]
+    assert [row["uid"] for row in store.recent_messages(1, status="matched", sort="oldest")] == [uids["incident"]]
+    assert [row["uid"] for row in store.recent_messages(1, channel_id="-456")] == [uids["latest"]]
+    assert [row["uid"] for row in store.recent_messages(1, status="not_sendable")] == [uids["incident"]]
+    assert [row["uid"] for row in store.recent_messages(1, status="sent")] == [uids["latest"]]
+    assert [row["uid"] for row in store.recent_messages(1, status="unmatched")] == [uids["old"]]
+    middle = message_from_api({**event()["message"], "timestamp": 1700000060000}).datetime
+    latest = message_from_api({**event()["message"], "timestamp": 1700000120000}).datetime
+    assert [row["uid"] for row in store.recent_messages(1, from_utc=middle, to_utc=latest)] == [uids["incident"]]
+    assert store.recent_messages(1)[0]["date_label"] == "2023-11-14"
+
+
+def test_feed_snapshot_applies_all_news_search(settings, store, monkeypatch):
+    import server
+
+    process_update(event(mid="incident"), store, settings, bot_id=1)
+    process_update(event(mid="office", text="МТС открыл офис"), store, settings, bot_id=1)
+    monkeypatch.setattr(server, "load_settings", lambda: settings)
+    rows = server.MonitorService().snapshot(message_search="ОФИС")["messages"]
+    assert [row["text"] for row in rows] == ["МТС открыл офис"]
+    assert rows[0]["datetime"] and rows[0]["date_label"]
 
 
 def test_ids_and_stable_message_id():

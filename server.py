@@ -6,8 +6,10 @@ import hmac
 import json
 from contextlib import asynccontextmanager
 import asyncio
+from datetime import datetime, timezone
+from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -33,13 +35,22 @@ class MonitorService:
         self._stop = StopFlag()
         self.session = self._empty_session()
 
-    def snapshot(self) -> dict:
+    def snapshot(
+        self, *, message_search: str = "", message_channel: str = "",
+        message_status: str = "all", message_sort: str = "newest",
+        message_from: datetime | None = None, message_to: datetime | None = None,
+    ) -> dict:
         settings = load_settings()
         store = MessageStore(settings.db_path)
         try:
             db_stats = store.stats(settings.keywords)
             matches = store.recent_matches(80)
-            messages = store.recent_messages(160)
+            messages = store.recent_messages(
+                160, search=message_search, channel_id=message_channel,
+                status=message_status, sort=message_sort,
+                from_utc=message_from.astimezone(timezone.utc).isoformat(timespec="seconds") if message_from else "",
+                to_utc=message_to.astimezone(timezone.utc).isoformat(timespec="seconds") if message_to else "",
+            )
         finally:
             store.close()
         with self._lock:
@@ -236,8 +247,19 @@ def health() -> dict:
 
 
 @app.get("/api/feed")
-def feed() -> dict:
-    return service.snapshot()
+def feed(
+    message_search: str = Query(default="", max_length=200),
+    message_channel: str = Query(default="", max_length=32),
+    message_status: Literal["all", "matched", "unmatched", "sent", "not_sendable"] = "all",
+    message_sort: Literal["newest", "oldest"] = "newest",
+    message_from: datetime | None = None,
+    message_to: datetime | None = None,
+) -> dict:
+    return service.snapshot(
+        message_search=message_search, message_channel=message_channel,
+        message_status=message_status, message_sort=message_sort,
+        message_from=message_from, message_to=message_to,
+    )
 
 
 class SettingsPayload(BaseModel):

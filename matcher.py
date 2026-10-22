@@ -23,6 +23,7 @@ class KeywordGroup:
 @dataclass
 class MatchResult:
     matched: bool
+    sendable: bool
     severity: str
     labels: list[str]
     hits_by_group: dict[int, list[str]]
@@ -140,8 +141,10 @@ def match_message(text: str, groups: list[KeywordGroup], min_hits: int = 1) -> M
             labels.append("плановые работы")
         if negative and "критическое" not in labels and severity not in {"normal", "active"}:
             labels.append("критическое")
+    sendable = matched and severity in {"critical", "active"} and _has_current_incident(text, groups)
     return MatchResult(
         matched=matched,
+        sendable=sendable,
         severity=severity,
         labels=labels,
         hits_by_group=hits_by_group,
@@ -179,12 +182,15 @@ def preview_match(
         missing.append(f"совпало слов {len(result.all_hits)}, нужно минимум {min_hits}")
     would_send = bool(
         result.matched
+        and result.sendable
         and send_enabled
         and has_recipients
         and not (send_only_critical and result.severity != "critical")
     )
     send_block: list[str] = []
     if result.matched and not would_send:
+        if not result.sendable:
+            send_block.append("нет подтверждённого действующего сбоя связи")
         if not send_enabled:
             send_block.append("выключена отправка")
         if not has_recipients:
@@ -218,6 +224,7 @@ def preview_match(
     return {
         "matched": result.matched,
         "would_send": would_send,
+        "sendable": result.sendable,
         "severity": result.severity,
         "labels": result.labels,
         "hits": hits,
@@ -225,6 +232,42 @@ def preview_match(
         "filtered_reason": filtered_reason,
         "send_reason": send_reason,
     }
+
+
+def _has_current_incident(text: str, groups: list[KeywordGroup]) -> bool:
+    """Require a factual incident in a telecom sentence before notifying recipients."""
+    topics = next((group.keywords for group in groups if group.id == 1), [])
+    signals = [word for group in groups if group.id in {2, 3} for word in group.keywords]
+    for sentence in re.split(r"[.!?;\n]+|\b(?:но|однако)\b", text, flags=re.I):
+        sentence = normalize_text(sentence)
+        if not sentence or (topics and not find_keywords(sentence, topics)):
+            continue
+        if not find_keywords(_without_negated_signals(sentence), signals):
+            continue
+        # Plans, warnings, possible damage and policy proposals are not reports of an outage.
+        hypothetical = re.search(
+            r"\b(?:в\s+случае|если|при\s+(?:сбое|аварии|повреждении|отключении)|"
+            r"возможност\w*|риск\w*|угроз\w*|может|могут|могло|могла|"
+            r"планов\w*|профилакти\w*|предлага\w*|просит|следует|"
+            r"избежа\w*|избег\w*|опасн\w*)\b", sentence)
+        confirmed = re.search(
+            r"\b(?:произош\w*|случил\w*|зафиксир\w*|возник\w*|"
+            r"наблюда\w*|поврежден(?:а|о|ы)?|обесточен(?:а|о|ы)?|"
+            r"отключил\w*|пропал\w*|пропала|сохраня\w*|продолжа\w*|"
+            r"не\s+работа\w*|не\s+восстанов\w*|не\s+устран\w*|"
+            r"нет\s+(?:связи|интернета|сигнала))\b", sentence)
+        if hypothetical:
+            continue
+        if re.search(r"\b(?:не\s+было|не\s+зафиксир\w*|нет)\s+(?:авари\w*|сбо\w*|перебо\w*|отключени\w*)", sentence):
+            continue
+        if re.search(r"\b(?:вчерашн\w*|ранее|в\s+прошлом|был\w*)\b", sentence) and not confirmed:
+            continue
+        if re.search(r"\b(?:восстановил\w*|устранил\w*)\b", sentence) and not confirmed:
+            continue
+        if re.search(r"\b(?:будет|будут|могут|может)\s+(?:поврежден\w*|отключен\w*|нарушен\w*)", sentence):
+            continue
+        return True
+    return False
 
 
 def _unique(values) -> list[str]:

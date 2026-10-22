@@ -13,6 +13,11 @@ class MessageStore:
     def __init__(self, db_path: Path):
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(db_path, timeout=30)
+        self._conn.create_function(
+            "contains_casefold", 2,
+            lambda value, needle: str(needle).casefold() in str(value or "").casefold(),
+            deterministic=True,
+        )
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._init()
@@ -61,7 +66,7 @@ class MessageStore:
 
     def pending_deliveries(self, recipients: list[str] | None = None,
                            only_critical: bool = False) -> list[tuple[str, str, str]]:
-        conditions = ["o.sent=0", "o.next_attempt <= ?", "m.matched=1", "m.send_suppressed=0"]
+        conditions = ["o.sent=0", "o.next_attempt <= ?", "m.matched=1", "m.sendable=1", "m.send_suppressed=0"]
         params: list = [datetime.now().timestamp()]
         if recipients is not None:
             if not recipients:
@@ -154,14 +159,15 @@ class MessageStore:
         ).fetchall()
         return [(row[0], row[1] or "") for row in rows]
 
-    def mark_matched(self, uid: str, keywords: list[str], labels: list[str] | None = None, severity: str | None = None) -> None:
+    def mark_matched(self, uid: str, keywords: list[str], labels: list[str] | None = None,
+                     severity: str | None = None, sendable: bool = False) -> None:
         self._conn.execute(
             """
             UPDATE messages
-            SET matched = 1, matched_keywords = ?, labels = ?, severity = ?
+            SET matched = 1, matched_keywords = ?, labels = ?, severity = ?, sendable = ?
             WHERE uid = ?
             """,
-            (", ".join(keywords), ", ".join(labels or []), severity or "", uid),
+            (", ".join(keywords), ", ".join(labels or []), severity or "", int(sendable), uid),
         )
         self._conn.commit()
 
@@ -189,7 +195,7 @@ class MessageStore:
         rows = self._conn.execute(
             """
             SELECT uid, channel_id, channel_name, text, datetime, time, views,
-                   matched_keywords, sent, scraped_at, labels, severity
+                   matched_keywords, sent, scraped_at, labels, severity, sendable
             FROM messages
             WHERE matched = 1
             ORDER BY scraped_at DESC
@@ -212,20 +218,52 @@ class MessageStore:
                 "scraped_at": row[9],
                 "labels": row[10] or "",
                 "severity": row[11] or "",
+                "sendable": bool(row[12]),
             }
             for row in rows
         ]
 
-    def recent_messages(self, limit: int = 200) -> list[dict]:
+    def recent_messages(
+        self, limit: int = 200, *, search: str = "", channel_id: str = "",
+        status: str = "all", sort: str = "newest", from_utc: str = "", to_utc: str = "",
+    ) -> list[dict]:
+        if status not in {"all", "matched", "unmatched", "sent", "not_sendable"}:
+            raise ValueError("Неизвестный фильтр сообщений")
+        if sort not in {"newest", "oldest"}:
+            raise ValueError("Неизвестный порядок сообщений")
+        conditions: list[str] = []
+        params: list = []
+        if search.strip():
+            conditions.append("contains_casefold(text, ?) = 1")
+            params.append(search.strip())
+        if channel_id:
+            conditions.append("channel_id = ?")
+            params.append(channel_id)
+        if status == "matched":
+            conditions.append("matched = 1")
+        elif status == "unmatched":
+            conditions.append("matched = 0")
+        elif status == "sent":
+            conditions.append("sent = 1")
+        elif status == "not_sendable":
+            conditions.append("matched = 1 AND sendable = 0")
+        if from_utc:
+            conditions.append("COALESCE(datetime, scraped_at) >= ?")
+            params.append(from_utc)
+        if to_utc:
+            conditions.append("COALESCE(datetime, scraped_at) < ?")
+            params.append(to_utc)
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        direction = "DESC" if sort == "newest" else "ASC"
+        params.append(limit)
         rows = self._conn.execute(
             """
             SELECT uid, channel_id, channel_name, text, datetime, time, views,
-                   matched, matched_keywords, sent, scraped_at, labels, severity
+                   matched, matched_keywords, sent, scraped_at, labels, severity, sendable,
+                   date_label
             FROM messages
-            ORDER BY scraped_at DESC
-            LIMIT ?
-            """,
-            (limit,),
+            """ + where + f" ORDER BY COALESCE(datetime, scraped_at) {direction}, uid {direction} LIMIT ?",
+            params,
         ).fetchall()
         return [
             {
@@ -242,6 +280,8 @@ class MessageStore:
                 "scraped_at": row[10],
                 "labels": row[11] or "",
                 "severity": row[12] or "",
+                "sendable": bool(row[13]),
+                "date_label": row[14],
             }
             for row in rows
         ]
@@ -367,6 +407,7 @@ class MessageStore:
         self._ensure_column("messages", "labels", "TEXT")
         self._ensure_column("messages", "severity", "TEXT")
         self._ensure_column("messages", "send_suppressed", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("messages", "sendable", "INTEGER NOT NULL DEFAULT 0")
         self._conn.commit()
 
     def _ensure_column(self, table: str, name: str, spec: str) -> None:

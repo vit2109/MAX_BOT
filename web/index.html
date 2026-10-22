@@ -109,6 +109,29 @@
       font-size: 14px;
       font-weight: 600;
     }
+    .feed-controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 0 10px 8px;
+      align-items: end;
+    }
+    .feed-controls label { margin: 0; flex: 1 1 115px; }
+    .feed-controls .feed-search { flex: 2 1 180px; }
+    .feed-controls input, .feed-controls select {
+      width: 100%;
+      height: 34px;
+      margin-top: 4px;
+      padding: 5px 7px;
+      color: var(--text);
+      background: #10151e;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      font: inherit;
+      color-scheme: dark;
+    }
+    .feed-controls button { height: 34px; padding: 5px 9px; }
+    .feed-count { padding: 0 12px 8px; color: var(--muted); font-size: 11px; }
     .list {
       overflow: auto;
       padding: 0 10px 10px;
@@ -243,6 +266,33 @@
       </div>
       <div class="panel secondary">
         <h2>Все новости</h2>
+        <div class="feed-controls" aria-label="Фильтры всех новостей">
+          <label class="feed-search">Поиск по тексту
+            <input id="message-search" type="search" placeholder="Слово или фраза">
+          </label>
+          <label>Источник
+            <select id="message-channel"><option value="">Все источники</option></select>
+          </label>
+          <label>Статус
+            <select id="message-status">
+              <option value="all">Все</option>
+              <option value="matched">Совпадения</option>
+              <option value="unmatched">Без совпадений</option>
+              <option value="sent">Отправленные</option>
+              <option value="not_sendable">Без рассылки</option>
+            </select>
+          </label>
+          <label>С даты<input id="message-from" type="date"></label>
+          <label>По дату<input id="message-to" type="date"></label>
+          <label>Порядок
+            <select id="message-sort">
+              <option value="newest">Сначала новые</option>
+              <option value="oldest">Сначала старые</option>
+            </select>
+          </label>
+          <button id="message-reset" type="button">Сбросить</button>
+        </div>
+        <div id="message-count" class="feed-count"></div>
         <div id="messages" class="list all-list"></div>
       </div>
     </section>
@@ -256,7 +306,7 @@
         <b>В «Отфильтрованные новости»</b>
         <p>Текст попадает слева только если есть слово из <b>группы 1</b> (тематика: оператор, IX, технология) <b>и</b> хотя бы одно слово из <b>группы 2, 3 или 5</b> (проблема / статус / восстановление). Топоним сам по себе не означает аварию. Подтверждённое восстановление снижает важность, если нет признаков продолжающейся проблемы. Поле «минимум совпавших слов» — дополнительный порог.</p>
         <b>В отправленные адресатам</b>
-        <p>Уходит в чат только уже отфильтрованное сообщение, если включено «Отправлять совпадения» и список адресатов не пуст. При первом запуске загружаются до 100 последних постов без рассылки. Новые события и посты API обрабатываются далее. Перепроверка архива не запускает рассылку. Неудачные отправки повторяются из очереди. «Слать только критические» — в чат только красные (аварийный сигнал).</p>
+        <p>Уходит в чат только сообщение о фактическом действующем сбое связи, если включено «Отправлять совпадения» и список адресатов не пуст. При первом запуске загружаются до 100 последних постов без рассылки. Новые события и посты API обрабатываются далее. Перепроверка архива не запускает рассылку. Неудачные отправки повторяются из очереди. «Слать только критические» — в чат только красные (аварийный сигнал).</p>
         <b>Пример</b>
         <p>«На MSK-IX проблемы, авария на подстанции» → группа 1: MSK-IX, группа 2: авария/проблем → в отфильтрованные, важность критическое. Без слова из группы 1 новость останется только справа, во всех новостях.</p>
       </div>
@@ -316,7 +366,51 @@
     const esc = (value) => String(value ?? "")
       .replaceAll("&", "&amp;")
       .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;");
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
+    const messageDateFormatter = new Intl.DateTimeFormat("ru-RU", {
+      day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit",
+    });
+    let channelOptionsKey = "";
+    let latestFeedRequest = 0;
+
+    function messageDate(item) {
+      const date = item.datetime ? new Date(item.datetime) : null;
+      if (date && !Number.isNaN(date.getTime())) return messageDateFormatter.format(date);
+      return [item.date_label, item.time].filter(Boolean).join(" ") || "Дата неизвестна";
+    }
+
+    function dateBoundary(value, nextDay = false) {
+      if (!value) return "";
+      const date = new Date(`${value}T00:00:00`);
+      if (nextDay) date.setDate(date.getDate() + 1);
+      return date.toISOString();
+    }
+
+    function feedParams() {
+      const params = new URLSearchParams();
+      const search = $("message-search").value.trim();
+      if (search) params.set("message_search", search.slice(0, 200));
+      if ($("message-channel").value) params.set("message_channel", $("message-channel").value);
+      if ($("message-status").value !== "all") params.set("message_status", $("message-status").value);
+      if ($("message-sort").value !== "newest") params.set("message_sort", $("message-sort").value);
+      if ($("message-from").value) params.set("message_from", dateBoundary($("message-from").value));
+      if ($("message-to").value) params.set("message_to", dateBoundary($("message-to").value, true));
+      return params;
+    }
+
+    function renderMessageChannels(channels) {
+      const key = JSON.stringify(channels.map((item) => [item.id, item.name]));
+      if (key === channelOptionsKey) return;
+      channelOptionsKey = key;
+      const select = $("message-channel");
+      const selected = select.value;
+      select.innerHTML = `<option value="">Все источники</option>` + channels.map((item) =>
+        `<option value="${esc(item.id)}">${esc(item.name)}</option>`
+      ).join("");
+      select.value = selected;
+    }
 
     function render(data) {
       const on = data.state === "on" || data.state === "starting";
@@ -343,12 +437,14 @@
       ).join("") + (s.channels || []).map((ch) =>
         `<span class="chip">${esc(ch.name)}: <b>${ch.messages}</b> / совп. ${ch.matches}</span>`
       ).join("");
+      renderMessageChannels(s.channels || []);
 
       $("matches").innerHTML = (data.matches || []).map((item) => `
         <article class="${esc(item.severity || "")}">
           <div class="meta">${esc(item.datetime || item.time)} · ${esc(item.channel_name || item.channel_id)}
             ${badge(item.labels)}
             ${item.matched_keywords ? ` · <span class="kw">${esc(item.matched_keywords)}</span>` : ""}
+            ${!item.sendable ? " · без рассылки" : ""}
             ${item.sent ? " · отправлено" : ""}</div>
           <div>${esc(item.text)}</div>
         </article>
@@ -356,11 +452,12 @@
 
       $("messages").innerHTML = (data.messages || []).map((item) => `
         <article class="${item.matched ? "hit" : ""} ${esc(item.severity || "")}">
-          <div class="meta">${esc(item.time || item.datetime)} · ${esc(item.channel_name || item.channel_id)}
+          <div class="meta">${esc(messageDate(item))} · ${esc(item.channel_name || item.channel_id)}
             ${item.views ? " · " + esc(item.views) : ""} ${badge(item.labels)}</div>
           <div class="text">${esc(item.text)}</div>
         </article>
       `).join("") || `<article class="meta">Лента пуста</article>`;
+      $("message-count").textContent = `Показано ${data.messages?.length || 0} сообщений (не более 160 за раз)`;
 
       const current = sess.current_channel ? `Текущий канал: ${sess.current_channel}. ` : "";
       $("footer").textContent = `${current}Итераций API: ${sess.rounds || 0}. Интервал опроса / пауза при ошибках: ${data.interval_seconds} с.`;
@@ -378,10 +475,31 @@
     }
 
     async function refresh() {
-      const res = await fetch("/api/feed");
+      const requestId = ++latestFeedRequest;
+      const query = feedParams().toString();
+      const res = await fetch("/api/feed" + (query ? `?${query}` : ""));
       if (res.status === 401) { location.assign("/login"); return; }
-      render(await res.json());
+      const data = await res.json();
+      if (requestId === latestFeedRequest) render(data);
     }
+
+    let searchTimer;
+    $("message-search").addEventListener("input", () => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(refresh, 250);
+    });
+    for (const id of ["message-channel", "message-status", "message-sort", "message-from", "message-to"]) {
+      $(id).addEventListener("change", refresh);
+    }
+    $("message-reset").onclick = () => {
+      $("message-search").value = "";
+      $("message-channel").value = "";
+      $("message-status").value = "all";
+      $("message-sort").value = "newest";
+      $("message-from").value = "";
+      $("message-to").value = "";
+      refresh();
+    };
 
     $("logout").onclick = async () => {
       await fetch("/api/logout", { method: "POST" });

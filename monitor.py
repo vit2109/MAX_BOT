@@ -37,8 +37,8 @@ def rematch_existing(store: MessageStore, settings: Settings) -> int:
         for uid, text in rows:
             result = match_message(text, settings.keyword_groups, settings.min_keyword_hits)
             store._conn.execute(
-                "UPDATE messages SET matched=?, matched_keywords=?, labels=?, severity=? WHERE uid=?",
-                (int(result.matched), ", ".join(result.all_hits), ", ".join(result.labels), result.severity, uid))
+                "UPDATE messages SET matched=?, sendable=?, matched_keywords=?, labels=?, severity=? WHERE uid=?",
+                (int(result.matched), int(result.sendable), ", ".join(result.all_hits), ", ".join(result.labels), result.severity, uid))
             count += int(result.matched)
     return count
 
@@ -69,9 +69,9 @@ def process_update(update: dict, store: MessageStore, settings: Settings, bot_id
     result = match_message(message.text, settings.keyword_groups, settings.min_keyword_hits)
     if not result.matched:
         return "saved" if items else "duplicate"
-    store.mark_matched(uid, result.all_hits, result.labels, result.severity)
+    store.mark_matched(uid, result.all_hits, result.labels, result.severity, result.sendable)
     alert = format_alert(channel_id, message, result.all_hits, result.labels, result.severity)
-    if not store.sending_suppressed(uid) and settings.send_enabled and (not settings.send_only_critical or result.severity == "critical"):
+    if result.sendable and not store.sending_suppressed(uid) and settings.send_enabled and (not settings.send_only_critical or result.severity == "critical"):
         recipients = [r for r in settings.recipients if r != f"chat:{channel_id}"]
         store.queue_alert(uid, recipients, alert)
     if items:
