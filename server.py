@@ -326,6 +326,29 @@ def preview(payload: PreviewPayload) -> dict:
     )
 
 
+class TestBatchPayload(BaseModel):
+    text: str = Field(default="", max_length=200_000)
+    min_keyword_hits: int = Field(default=1, ge=1, le=20)
+    keyword_groups: list[dict] = Field(default_factory=list)
+
+
+@app.post("/api/test-batch")
+def test_batch(payload: TestBatchPayload) -> dict:
+    """Offline parser test. Does not call MAX, touch the database, or enqueue alerts."""
+    blocks = [part.strip() for part in __import__("re").split(r"\n\s*\n", payload.text) if part.strip()]
+    if len(blocks) > 200:
+        raise HTTPException(status_code=400, detail="За один раз можно проверить не более 200 сообщений")
+    groups = groups_from_payload(payload.keyword_groups)
+    results = []
+    for index, block in enumerate(blocks, start=1):
+        result = preview_match(
+            block, groups, payload.min_keyword_hits,
+            send_enabled=False, send_only_critical=False, has_recipients=False,
+        )
+        results.append({"index": index, "text": block, **result})
+    return {"ok": True, "count": len(results), "results": results, "offline": True}
+
+
 @app.post("/api/start")
 def start() -> dict:
     return service.start()

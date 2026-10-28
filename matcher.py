@@ -78,44 +78,56 @@ def find_keywords(text: str, keywords: list[str]) -> list[str]:
 
 
 def match_message(text: str, groups: list[KeywordGroup], min_hits: int = 1) -> MatchResult:
-    """Require telecom context and an incident/recovery signal, never geography alone."""
+    """Classify telecom incidents in Russia; keep credible threats separate from outages."""
     hits_by_group: dict[int, list[str]] = {}
     for group in groups:
         searchable = _without_negated_signals(text) if group.id in {2, 3} else text
         if group.id == 5:
             searchable = _confirmed_recovery_text(text)
-        hits = find_keywords(searchable, group.keywords)
+        if group.id == 4:
+            hits = _find_toponyms(searchable, group.keywords)
+        else:
+            hits = find_keywords(searchable, group.keywords)
         if hits:
             hits_by_group[group.id] = hits
+
     all_hits = _unique(word for hits in hits_by_group.values() for word in hits)
     topic = hits_by_group.get(1, [])
     negative = hits_by_group.get(2, [])
     active = hits_by_group.get(3, [])
     toponym = hits_by_group.get(4, [])
     resolved = hits_by_group.get(5, [])
-    has_topic_list = bool(next((group.keywords for group in groups if group.id == 1), []))
-    signal = negative or active or resolved
-    if has_topic_list:
-        matched = bool(topic and signal)
-    else:
-        matched = bool(signal)
-    if matched and len(all_hits) < min_hits:
-        matched = False
+    topic_group = next((group for group in groups if group.id == 1), None)
+    geography_group = next((group for group in groups if group.id == 4), None)
+    has_topic_list = bool(topic_group and topic_group.keywords)
+    has_geography_list = bool(geography_group and geography_group.keywords)
+    signal = bool(negative or active or resolved)
+
+    # A location in group 4 is explicitly configured as a Russian toponym.
+    # If that list is configured, require a hit from it. Explicit references to
+    # Russia/RF are also accepted, but foreign-only locations are not.
+    in_russia = _is_russian_territory(text, toponym, has_geography_list)
+    has_telecom_topic = bool(topic) if has_topic_list else bool(signal)
+    candidate = has_telecom_topic and signal and len(all_hits) >= min_hits
+
+    current_incident = candidate and in_russia and _has_current_incident(text, groups)
+    threat = candidate and in_russia and _is_immediate_threat(text) and not current_incident
+    matched = bool(current_incident or threat)
+
     labels: list[str] = []
     severity = "none"
-    if matched:
+    if current_incident:
         normalized = normalize_text(text)
         unresolved = bool(re.search(
             r"(?:не\s+(?:(?:был[аи]?|еще|пока|полностью)\s+){0,3}(?:восстанов\w*|устран\w*|работ\w*)"
             r"|(?:сохраня\w*|продолжа\w*|остаю\w*|остал\w*)[^.!?;]{0,60}(?:сбо\w*|проблем\w*|перебо\w*|недоступ\w*)"
             r"|(?:сбо\w*|проблем\w*|перебо\w*)[^.!?;]{0,60}(?:сохраня\w*|продолжа\w*)"
             r"|частич\w*|не\s+у\s+всех|по-прежнему)", normalized))
-        # A recovery in one sentence must not hide an independent outage in another.
         for sentence in re.split(r"[.!?;\n]+|\b(?:но|однако)\b", text, flags=re.I):
             has_recovery = any(find_keywords(_confirmed_recovery_text(sentence), g.keywords)
                                for g in groups if g.id == 5)
             has_incident = any(find_keywords(_without_negated_signals(sentence), g.keywords)
-                              for g in groups if g.id in {2, 3})
+                               for g in groups if g.id in {2, 3})
             historical = bool(re.search(r"\b(?:был\w*|произош\w*|ранее|вчера)\b", normalize_text(sentence)))
             if has_incident and not has_recovery and not historical:
                 unresolved = True
@@ -135,13 +147,17 @@ def match_message(text: str, groups: list[KeywordGroup], min_hits: int = 1) -> M
             severity = "topic"
         if active and "активное" not in labels:
             labels.append("активное")
-        if toponym:
-            labels.append("топоним")
+        if toponym or in_russia:
+            labels.append("территория РФ")
         if planned:
             labels.append("плановые работы")
-        if negative and "критическое" not in labels and severity not in {"normal", "active"}:
-            labels.append("критическое")
-    sendable = matched and severity in {"critical", "active"} and _has_current_incident(text, groups)
+    elif threat:
+        severity = "warning"
+        labels.extend(["угроза", "территория РФ"])
+        if toponym:
+            labels.append("топоним")
+
+    sendable = bool(current_incident and severity in {"critical", "active"})
     return MatchResult(
         matched=matched,
         sendable=sendable,
@@ -150,6 +166,67 @@ def match_message(text: str, groups: list[KeywordGroup], min_hits: int = 1) -> M
         hits_by_group=hits_by_group,
         all_hits=all_hits,
     )
+
+
+def _find_toponyms(text: str, keywords: list[str]) -> list[str]:
+    """Match configured Russian place names in common grammatical cases."""
+    found = find_keywords(text, keywords)
+    normalized = normalize_text(text)
+    seen = {normalize_text(item) for item in found}
+    for keyword in keywords:
+        for variant in _variants(keyword):
+            if normalize_text(keyword) in seen or not variant or " " in variant:
+                continue
+            if not re.fullmatch(r"[а-я-]+", variant):
+                continue
+            stem = variant
+            for ending in ("ия", "ье", "ье", "ово", "ево", "ино", "а", "я", "ь"):
+                if variant.endswith(ending) and len(variant) - len(ending) >= 3:
+                    stem = variant[:-len(ending)]
+                    break
+            if stem == variant:
+                continue
+            if re.search(r"(?<!\w)" + re.escape(stem) + r"[а-я]{0,4}(?!\w)", normalized):
+                found.append(keyword)
+                seen.add(normalize_text(keyword))
+                break
+    return found
+
+
+def _is_russian_territory(text: str, toponym_hits: list[str], has_geography_list: bool) -> bool:
+    """Return true only when Russian territory is indicated or a configured RF toponym matches."""
+    normalized = normalize_text(text)
+    explicit_russia = bool(re.search(
+        r"\b(?:росси\w*|рф|российск\w*|на территории российск\w*|в пределах рф)\b",
+        normalized,
+    ))
+    if explicit_russia:
+        return True
+    if has_geography_list:
+        return bool(toponym_hits)
+    # Without a configured Russian toponym list, fail closed for unknown locations.
+    return False
+
+
+def _is_immediate_threat(text: str) -> bool:
+    """Detect explicit prospective threats; these are visible but never sendable as incidents."""
+    normalized = normalize_text(text)
+    threat_marker = re.search(
+        r"\b(?:угроз\w*|риск\w*|возможн\w*|может\s+(?:привести|нарушить|повредить|остановить)|"
+        r"могут\s+(?:повредить|нарушить|привести)|опаса\w*|предупрежда\w*|под угрозой)\b",
+        normalized,
+    )
+    infrastructure = re.search(
+        r"\b(?:связ\w*|интернет\w*|телеком\w*|кабел\w*|сеть\w*|оператор\w*|"
+        r"базов\w* станц\w*|линия\w* передач\w*)\b",
+        normalized,
+    )
+    hypothetical_or_future = re.search(
+        r"\b(?:может|могут|возможн\w*|риск\w*|угроз\w*|планиру\w*|предупрежда\w*|"
+        r"опаса\w*|в случае|если произойдет|при повреждении)\b",
+        normalized,
+    )
+    return bool(threat_marker and infrastructure and hypothetical_or_future)
 
 
 def preview_match(
@@ -175,11 +252,13 @@ def preview_match(
     elif has_topic_list and not topic:
         missing.append("нет слова из группы 1 (тематика)")
     if has_topic_list and topic and not signal:
-        missing.append("есть тематика, но нет сообщения о проблеме или восстановлении (группы 2, 3, 5)")
+        missing.append("есть тематика, но нет сигнала о проблеме или угрозе")
     if not has_topic_list and not result.all_hits:
         missing.append("нет ни одного ключевого слова")
     if topic and signal and len(result.all_hits) < min_hits:
         missing.append(f"совпало слов {len(result.all_hits)}, нужно минимум {min_hits}")
+    if result.severity == "none" and (topic or signal):
+        missing.append("не подтверждена территория РФ и/или реальное событие")
     would_send = bool(
         result.matched
         and result.sendable
@@ -189,7 +268,9 @@ def preview_match(
     )
     send_block: list[str] = []
     if result.matched and not would_send:
-        if not result.sendable:
+        if result.severity == "warning":
+            send_block.append("угроза показывается отдельно и не отправляется как подтверждённая авария")
+        elif not result.sendable:
             send_block.append("нет подтверждённого действующего сбоя связи")
         if not send_enabled:
             send_block.append("выключена отправка")
@@ -202,11 +283,10 @@ def preview_match(
         f"{gid}. {names.get(gid, gid)}": words
         for gid, words in result.hits_by_group.items()
     }
-    if result.matched:
-        filtered_reason = (
-            "Попадёт в «Отфильтрованные»: есть тематика (группа 1) "
-            "и сигнал о проблеме или восстановлении (группы 2, 3, 5)."
-        )
+    if result.matched and result.severity == "warning":
+        filtered_reason = "Попадёт в отдельную категорию «Угрозы»: есть признаки возможной угрозы инфраструктуре связи в РФ, но подтверждённая авария не установлена."
+    elif result.matched:
+        filtered_reason = "Попадёт в «Отфильтрованные»: обнаружено реальное событие, связанное со связью, на территории РФ."
         if result.severity == "normal":
             filtered_reason += " Подтверждено восстановление без признаков продолжающейся проблемы."
     else:
