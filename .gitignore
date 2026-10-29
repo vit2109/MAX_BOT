@@ -20,3 +20,6 @@ wheels/
 output/
 data/
 certs/
+/messages.sqlite
+/messages.zip
+/messages.sqlite-*
