@@ -204,6 +204,21 @@
     .preview-out.ok { border-color: #3ddc84; }
     .preview-out.no { border-color: var(--warn); }
     .full { grid-column: 1 / -1; }
+    .tester-panel { padding: 14px; overflow: auto; gap: 10px; }
+    .tester-panel[hidden] { display: none !important; }
+    .tester-intro { color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .test-input { min-height: 180px; width: 100%; background: #10151e; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 10px; font: inherit; resize: vertical; }
+    .tester-actions { display: flex; align-items: end; gap: 8px; flex-wrap: wrap; }
+    .tester-actions label { margin: 0; width: 180px; }
+    .tester-actions input { display: block; width: 100%; margin-top: 5px; background: #10151e; color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 8px; }
+    .test-summary { color: var(--muted); font-size: 13px; }
+    .test-results { overflow: auto; }
+    .test-table { border-collapse: collapse; width: 100%; font-size: 12px; }
+    .test-table th, .test-table td { border-bottom: 1px solid var(--line); padding: 8px; text-align: left; vertical-align: top; }
+    .test-table th { position: sticky; top: 0; background: var(--panel); }
+    .test-message { min-width: 280px; max-width: 520px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .test-table select { background: #10151e; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px; }
+    .test-result-good { color: var(--ok); } .test-result-bad { color: #ff9d94; }
     .grid-2 {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -236,6 +251,63 @@
       z-index: 30;
     }
     .toast.error { background: #3b1d1d; border-color: var(--warn); }
+
+    /* Полноэкранный режим офлайн-тестера */
+    body.test-mode-active { overflow: hidden; }
+    body.test-mode-active .app {
+      height: 100dvh;
+      min-height: 0;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 10px;
+      padding: 10px 14px 14px;
+    }
+    body.test-mode-active #stats,
+    body.test-mode-active #keywords,
+    body.test-mode-active #dashboard-boards,
+    body.test-mode-active #footer { display: none !important; }
+    body.test-mode-active #tester-panel {
+      display: flex !important;
+      min-height: 0;
+      height: 100%;
+      overflow: hidden;
+      padding: 16px;
+      gap: 10px;
+    }
+    body.test-mode-active #tester-panel > h2 { padding: 0 0 2px; font-size: 17px; }
+    body.test-mode-active .tester-intro { flex: 0 0 auto; }
+    body.test-mode-active .test-input {
+      min-height: 110px;
+      height: clamp(120px, 23vh, 240px);
+      flex: 0 0 auto;
+      resize: vertical;
+    }
+    body.test-mode-active .tester-actions { flex: 0 0 auto; }
+    body.test-mode-active .test-summary { flex: 0 0 auto; padding: 2px 0; }
+    body.test-mode-active .test-results {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #121823;
+    }
+    body.test-mode-active .test-table { font-size: 13px; table-layout: fixed; }
+    body.test-mode-active .test-table th { z-index: 2; padding: 11px 10px; }
+    body.test-mode-active .test-table td { padding: 10px; }
+    body.test-mode-active .test-table th:nth-child(1) { width: 48px; }
+    body.test-mode-active .test-table th:nth-child(2) { width: 42%; }
+    body.test-mode-active .test-table th:nth-child(3) { width: 22%; }
+    body.test-mode-active .test-table th:nth-child(4) { width: 22%; }
+    body.test-mode-active .test-table th:nth-child(5) { width: 150px; }
+    body.test-mode-active .test-message { min-width: 0; max-width: none; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
+    body.test-mode-active .test-table select { max-width: 100%; width: 100%; }
+    @media (max-width: 900px) {
+      body.test-mode-active .app { padding: 8px; }
+      body.test-mode-active header { flex-wrap: wrap; }
+      body.test-mode-active .test-input { height: 160px; }
+      body.test-mode-active .test-table { min-width: 850px; }
+    }
+
     @media (max-width: 980px) {
       .stats { grid-template-columns: repeat(3, 1fr); }
       .boards { grid-template-columns: 1fr; }
@@ -252,6 +324,7 @@
       <div class="spacer"></div>
       <button id="logout">Выйти</button>
       <button id="settings">Настройки</button>
+      <button id="test-mode">Тест парсера</button>
       <button id="start" class="primary">Старт</button>
       <button id="stop" disabled>Стоп</button>
     </header>
@@ -259,7 +332,21 @@
     <section class="stats" id="stats"></section>
     <div class="chips" id="keywords"></div>
 
-    <section class="boards">
+    <section id="tester-panel" class="panel tester-panel" hidden>
+      <h2>Офлайн-проверка сообщений</h2>
+      <div class="tester-intro">Вставьте сообщения из MAX. Одно сообщение — один блок текста; разделяйте сообщения пустой строкой. Проверка использует текущие ключевые группы, но не подключается к MAX, не сохраняет сообщения в базу и не отправляет уведомления.</div>
+      <textarea id="test-input" class="test-input" placeholder="Вставьте сюда одно или несколько сообщений…"></textarea>
+      <div class="tester-actions">
+        <label>Минимум совпавших слов <input id="test-min-hits" type="number" min="1" max="20" value="1"></label>
+        <button id="test-run" class="primary">Проверить сообщения</button>
+        <button id="test-clear">Очистить</button>
+        <button id="test-export" disabled>Экспорт CSV</button>
+      </div>
+      <div id="test-summary" class="test-summary"></div>
+      <div id="test-results" class="test-results"></div>
+    </section>
+
+    <section class="boards" id="dashboard-boards">
       <div class="panel">
         <h2>Отфильтрованные новости</h2>
         <div id="matches" class="list main-list"></div>
@@ -607,6 +694,78 @@
         hits ? "Найдено\n" + hits : "Совпадений по группам нет",
       ].filter(Boolean).join("\n\n");
     }
+    let testResults = [];
+    let testMode = false;
+    function toggleTestMode(enabled) {
+      testMode = enabled;
+      document.body.classList.toggle("test-mode-active", enabled);
+      $("tester-panel").hidden = !enabled;
+      $("stats").hidden = enabled;
+      $("keywords").hidden = enabled;
+      $("dashboard-boards").hidden = enabled;
+      $("footer").hidden = enabled;
+      $("test-mode").textContent = enabled ? "К мониторингу" : "Тест парсера";
+      if (enabled) loadTestMinHits();
+    }
+    async function loadTestMinHits() {
+      try {
+        const res = await fetch("/api/settings");
+        if (res.ok) { const data = await res.json(); $("test-min-hits").value = data.min_keyword_hits || 1; }
+      } catch (_) {}
+    }
+    function updateTestSummary() {
+      const relevant = testResults.filter(x => x.manual === "relevant").length;
+      const irrelevant = testResults.filter(x => x.manual === "irrelevant").length;
+      const unsure = testResults.filter(x => x.manual === "unsure").length;
+      const matched = testResults.filter(x => x.matched).length;
+      $("test-summary").textContent = `Сообщений: ${testResults.length} · совпали по правилам: ${matched} · вручную релевантны: ${relevant} · нерелевантны: ${irrelevant} · пока не оценены: ${unsure}`;
+      $("test-export").disabled = testResults.length === 0;
+    }
+    function renderTestResults() {
+      const out = $("test-results");
+      if (!testResults.length) { out.innerHTML = ""; updateTestSummary(); return; }
+      const rows = testResults.map((item, i) => {
+        const hits = Object.entries(item.hits || {}).map(([name, words]) => `${name}: ${(words || []).join(", ")}`).filter(Boolean).join("; ");
+        const status = item.matched ? "Совпадение" : "Отфильтровано";
+        const cls = item.matched ? "test-result-good" : "test-result-bad";
+        return `<tr><td>${i + 1}</td><td class="test-message">${esc(item.text)}</td><td class="${cls}">${esc(status)}<br>${esc(item.filtered_reason || "")}</td><td>${esc((item.labels || []).join(", ") || "—")}<br><small>${esc(hits || "Ключевые слова не найдены")}</small></td><td><select data-test-rating="${i}"><option value="unsure" ${item.manual === "unsure" ? "selected" : ""}>Не оценено</option><option value="relevant" ${item.manual === "relevant" ? "selected" : ""}>Релевантно</option><option value="irrelevant" ${item.manual === "irrelevant" ? "selected" : ""}>Нерелевантно</option></select></td></tr>`;
+      }).join("");
+      out.innerHTML = `<table class="test-table"><thead><tr><th>№</th><th>Сообщение</th><th>Результат правил</th><th>Метки и совпадения</th><th>Ваша оценка</th></tr></thead><tbody>${rows}</tbody></table>`;
+      out.querySelectorAll("select[data-test-rating]").forEach(select => select.addEventListener("change", event => {
+        const index = Number(event.target.dataset.testRating);
+        testResults[index].manual = event.target.value;
+        updateTestSummary();
+      }));
+      updateTestSummary();
+    }
+    async function runBatchTest() {
+      const text = $("test-input").value.trim();
+      if (!text) { showToast("Сначала вставьте текст сообщений", true); return; }
+      const settings = await (await fetch("/api/settings")).json();
+      const groups = settings.keyword_groups || [];
+      const button = $("test-run"); button.disabled = true; button.textContent = "Проверка…";
+      try {
+        const res = await fetch("/api/test-batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, min_keyword_hits: Number($("test-min-hits").value) || 1, keyword_groups: groups }) });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Не удалось проверить сообщения");
+        testResults = data.results.map(item => ({ ...item, manual: "unsure" }));
+        renderTestResults();
+        showToast(`Проверено сообщений: ${data.count}. Офлайн-режим.`);
+      } catch (error) { showToast(error.message || "Ошибка проверки", true); }
+      finally { button.disabled = false; button.textContent = "Проверить сообщения"; }
+    }
+    function exportTestCsv() {
+      const quote = value => `"${String(value ?? "").replaceAll('"', '""')}"`;
+      const rows = [["№", "Сообщение", "Совпало по правилам", "Метки", "Причина фильтрации", "Совпавшие слова", "Ручная оценка"]];
+      testResults.forEach((item, i) => rows.push([i + 1, item.text, item.matched ? "да" : "нет", (item.labels || []).join(", "), item.filtered_reason || "", Object.entries(item.hits || {}).map(([k,v]) => `${k}: ${(v || []).join(", ")}`).join("; "), ({relevant:"релевантно", irrelevant:"нерелевантно", unsure:"не оценено"})[item.manual]]));
+      const blob = new Blob(["\ufeff" + rows.map(row => row.map(quote).join(";")).join("\r\n")], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "max_parser_test.csv"; a.click(); URL.revokeObjectURL(url);
+    }
+    $("test-mode").onclick = () => toggleTestMode(!testMode);
+    $("test-run").onclick = runBatchTest;
+    $("test-clear").onclick = () => { $("test-input").value = ""; testResults = []; renderTestResults(); };
+    $("test-export").onclick = exportTestCsv;
+
     $("settings").onclick = openSettings;
     $("settings-cancel").onclick = () => $("overlay").classList.remove("open");
     $("settings-save").onclick = saveSettings;
